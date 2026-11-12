@@ -1,36 +1,44 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# ShipToEcom — iki ikas mağazası için ortak stok ve sipariş paneli
 
-## Getting Started
+İki ikas mağazasını bağlar; aynı SKU'lu ürünler tek stoktan düşer, siparişler mağaza etiketiyle tek listede görünür.
+Müşteri bilgileri (ad, e-posta, telefon, adres) ikas'tan hiç istenmez ve saklanmaz.
 
-First, run the development server:
+## Çalıştırma
 
 ```bash
+npm install
+npx prisma db push
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+`.env.example` dosyasını `.env` olarak kopyalayıp doldurun.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Gerçek mağaza olmadan deneme
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run mock
+IKAS_GRAPHQL_URL=http://localhost:4010/graphql IKAS_TOKEN_URL="http://localhost:4010/{store}/token" IKAS_IMAGE_URL=http://localhost:4010/image npm run dev
+```
 
-## Learn More
+Bu iki komut yalnızca sahte API ile deneme içindir; gerçek mağazalar için düz `npm run dev` kullanın.
 
-To learn more about Next.js, take a look at the following resources:
+Mağaza adları `magaza-a` ve `magaza-b`; Client ID/Secret herhangi bir değer olabilir.
+Sipariş simülasyonu: `curl -X POST "localhost:4010/_order?store=magaza-a&sku=TS-001&qty=2"`
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Nasıl çalışır
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+- `src/lib/reconcile.ts` — ortak stok hesabı (`npm test`).
+- `src/lib/sync.ts` — ürünleri okur, ortak stoğu hesaplar, iki mağazaya yazar, siparişleri çeker.
+- `src/lib/ikas.ts` — ikas Admin API istemcisi.
+- `src/lib/product.ts` + `/urunler/yeni` — tek formdan seçili mağazalarda aynı SKU ile ürün oluşturur (marka/kategori/etiket/varyant tipi yoksa mağazada açılır).
+- `/urunler` — ürün/fiyat listesi ve otomatik fiyat kuralı (`src/lib/pricing.ts`): bir mağazanın fiyatı diğerinden yüzde/sabit farkla hesaplanır, her senkronda yazılır.
+- `/indirimler` — ikas kampanyalarını (yüzde, tutar, ücretsiz kargo, kuponlu) seçili mağazalarda oluşturur/siler; liste doğrudan ikas'tan okunur.
+- `/siparisler` — durum filtreleri, ürün görselleri ve ikas paketlerinden gelen kargo barkodu/takip bilgisi.
+- `/api/webhooks/ikas/[storeId]/[secret]` — ikas bildirimi gelince senkronu tetikler (gövde okunmaz).
+- `/api/cron/sync` — periyodik güvenlik ağı; `Authorization: Bearer $CRON_SECRET` ile 5–10 dakikada bir çağrılmalı.
 
-## Deploy on Vercel
+## Yayına almadan önce
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `prisma/schema.prisma` içinde `provider = "postgresql"` yapın.
+- `APP_URL` https adresi olmalı; sonra Mağazalar ekranından "Webhook kur".
+- Gerçek bir ikas test mağazasında doğrulanacaklar: `saveProductStockLocations` mutlak değer mi yazıyor, webhook imza başlığı, sipariş durum değerleri, ürün eklemede varyant tipi `selectionType: "CHOICE"` değeri ve görsel yükleme; görsel CDN adresi kalıbı (`cdn.myikas.com/images/{merchantId}/{imageId}/image_180.webp`), `saveVariantPrices` ile indirimli fiyatın `null` gönderilerek kaldırılması, kampanya girdisi.

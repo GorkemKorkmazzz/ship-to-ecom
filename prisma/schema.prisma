@@ -1,0 +1,240 @@
+// Not: Yerelde SQLite. Yayına alırken provider "postgresql" yapılıp DATABASE_URL değiştirilir.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// Yönetim paneli (backofis) hesabı — müşteri hesaplarından tamamen ayrıdır.
+model Admin {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  createdAt    DateTime @default(now())
+}
+
+// Platform kullanıcısı (kiracı). Her kullanıcının kendi mağazaları ve verisi vardır.
+model User {
+  id           String       @id @default(cuid())
+  email        String       @unique
+  passwordHash String
+  createdAt    DateTime     @default(now())
+  lastSyncAt   DateTime?
+  // Paket (ödeme entegrasyonu yok; backofisten yönetilir)
+  plan          String    @default("baslangic") // baslangic | profesyonel | kurumsal
+  billingPeriod String    @default("aylik") // aylik | yillik
+  trialEndsAt   DateTime?
+  paidUntil     DateTime?
+  suspended     Boolean   @default(false)
+  billing       BillingInfo?
+  payments      Payment[]
+  // Stok ayarları
+  safetyStock       Float  @default(0) // mağazalara yazılmayan tampon adet
+  lowStockThreshold Float? // null = uyarı kapalı
+  skuSettings    SkuSetting[]
+  stockMovements StockMovement[]
+  stores       Store[]
+  sharedItems  SharedItem[]
+  syncLogs     SyncLog[]
+}
+
+model Store {
+  id              String         @id @default(cuid())
+  userId          String
+  user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label           String // panelde görünen ad
+  storeName       String // <storeName>.myikas.com
+  clientId        String
+  clientSecretEnc String // AES-256-GCM ile şifreli
+  accessToken     String?
+  tokenExpiresAt  DateTime?
+  stockLocationId String?
+  webhookSecret   String
+  webhooksActive  Boolean        @default(false)
+  lastOrderSyncAt DateTime?
+  lastSyncAt      DateTime?
+  lastError       String?
+  merchantId      String? // görsel adresleri için
+  // Otomatik fiyat kuralı: bu mağazanın fiyatı = diğer mağazanın fiyatı × (1 + yüzde/100) + sabit
+  priceRuleActive Boolean        @default(false)
+  pricePercent    Float          @default(0)
+  priceFixed      Float          @default(0)
+  priceRound      String         @default("none") // none | 1 | 0.90 | 0.99
+  stockSharePercent Float        @default(100) // ortak stoğun bu mağazada görünen payı
+  createdAt       DateTime       @default(now())
+  variants        StoreVariant[]
+  aliases         SkuAlias[]
+  orders          Order[]
+
+  @@unique([userId, storeName])
+}
+
+// SKU başına ortak (paylaşılan) stok — tek doğru kaynak.
+model SharedItem {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sku         String
+  name        String
+  sharedStock Float
+  // Panelden yapılan, bir sonraki senkronda uygulanacak düzeltme
+  pendingDelta Float   @default(0)
+  pendingNote  String?
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, sku])
+}
+
+// Fatura bilgileri (hesap başına bir kayıt)
+model BillingInfo {
+  id        String @id @default(cuid())
+  userId    String @unique
+  user      User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String @default("kurumsal") // bireysel | kurumsal
+  name      String // ad soyad veya şirket unvanı
+  taxNumber String // TCKN veya VKN
+  taxOffice String @default("")
+  address   String
+  district  String
+  city      String
+  phone     String
+  email     String
+}
+
+// Lisans siparişi / ödeme kaydı
+model Payment {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reference   String    @unique // havale açıklamasına yazılan kod
+  plan        String
+  period      String // aylik | yillik
+  amount      Float // KDV hariç
+  vat         Float
+  total       Float
+  method      String    @default("havale") // havale | kart
+  status      String    @default("bekliyor") // bekliyor | bildirildi | odendi | iptal
+  billingJson String // sipariş anındaki fatura bilgileri
+  createdAt   DateTime  @default(now())
+  paidAt      DateTime?
+  periodEnd   DateTime?
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+// SKU'ya özel ayarlar
+model SkuSetting {
+  id                String  @id @default(cuid())
+  userId            String
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sku               String
+  excluded          Boolean @default(false) // ortak stok senkronu dışında
+  safetyStock       Float? // null = genel ayar
+  lowStockThreshold Float? // null = genel ayar
+
+  @@unique([userId, sku])
+}
+
+// Ortak stok hareketleri
+model StockMovement {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sku         String
+  createdAt   DateTime @default(now())
+  storeLabel  String?
+  delta       Float
+  sharedAfter Float
+  reason      String // sale | increase | panel | link
+  note        String?
+
+  @@index([userId, sku, createdAt])
+}
+
+// Bir mağazadaki varyant ve o mağazada en son gördüğümüz/yazdığımız stok.
+model StoreVariant {
+  id            String   @id @default(cuid())
+  storeId       String
+  store         Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sku           String
+  productId     String
+  variantId     String
+  productName   String
+  currentStock  Float    @default(0)
+  sellPrice     Float?
+  discountPrice Float?
+  buyPrice      Float?
+  imageId       String?
+  barcode       String?
+  // Mağazalar arası eşleşme anahtarı: normalde SKU, elle eşleştirme varsa karşı mağazanın SKU'su
+  matchSku      String   @default("")
+  lastSeenStock Float? // null = henüz ortak stoğa bağlanmadı
+  duplicateSku  Boolean  @default(false)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([storeId, variantId])
+  @@index([storeId, sku])
+  @@index([storeId, matchSku])
+}
+
+// Elle SKU eşleştirme: bu mağazadaki "sku", ortak stokta "matchSku" olarak sayılır.
+model SkuAlias {
+  id       String @id @default(cuid())
+  storeId  String
+  store    Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sku      String
+  matchSku String
+
+  @@unique([storeId, sku])
+}
+
+// Sipariş — müşteri adı, e-posta, telefon, adres gibi alanlar BİLEREK yok.
+model Order {
+  id              String      @id @default(cuid())
+  storeId         String
+  store           Store       @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  ikasOrderId     String
+  orderNumber     String
+  status          String
+  paymentStatus   String?
+  packageStatus   String?
+  currency        String
+  totalFinalPrice Float
+  orderedAt       DateTime?
+  shippingMethod  String?
+  // Kargo paketleri (JSON): [{ number, barcode, cargoCompany, trackingNumber, trackingLink }]
+  packages        String      @default("[]")
+  createdAt       DateTime    @default(now())
+  lines           OrderLine[]
+
+  @@unique([storeId, ikasOrderId])
+  @@index([storeId, orderedAt])
+}
+
+model OrderLine {
+  id         String @id @default(cuid())
+  orderId    String
+  order      Order  @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  sku        String
+  name       String
+  quantity   Float
+  finalPrice Float?
+  imageId    String?
+}
+
+model SyncLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  level     String   @default("info") // info | warn | error
+  sku       String?
+  storeLabel String?
+  message   String
+
+  @@index([userId, createdAt])
+}
