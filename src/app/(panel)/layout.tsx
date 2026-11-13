@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { logout } from "@/app/actions";
-import { db } from "@/lib/db";
+import { getStores } from "@/lib/cache";
 import { accountStatus, planById } from "@/lib/plans";
 import { requireUser } from "@/lib/session";
 import { Logo } from "./logo";
@@ -9,7 +9,7 @@ import { STORE_HEX } from "./ui";
 
 export default async function PanelLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   const plan = planById(user.plan);
   const status = accountStatus(user, new Date().getTime());
   const daysLeft = user.trialEndsAt ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - new Date().getTime()) / 86400000)) : 0;

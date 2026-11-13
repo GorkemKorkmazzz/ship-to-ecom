@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { adjustStock, saveSkuSettings } from "@/app/actions";
+import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { Flash, PageHeader, StoreBadge, fmtDate } from "../../ui";
@@ -15,7 +16,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ s
   const user = await requireUser();
   const sp = await searchParams;
   const sku = sp.sku ?? "";
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   const [variants, item, setting, movements] = await Promise.all([
     db.storeVariant.findMany({ where: { matchSku: sku, storeId: { in: stores.map((s) => s.id) } } }),
     db.sharedItem.findUnique({ where: { userId_sku: { userId: user.id, sku } } }),

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { invalidateCampaigns } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { addCoupon, deleteCampaigns, saveCampaign } from "@/lib/ikas";
 import { requireUser } from "@/lib/session";
@@ -61,6 +62,7 @@ export async function createCampaign(fd: FormData) {
       failed = true;
       results.push(`${store.label}: ${e instanceof Error ? e.message : e}`);
     }
+    invalidateCampaigns(store.id);
   }
   await db.syncLog.create({
     data: { userId: user.id, level: failed ? "warn" : "info", message: `Kampanya "${title}" → ${results.join(" · ")}` },
@@ -87,6 +89,7 @@ export async function removeCampaign(fd: FormData) {
     } catch (e) {
       errors.push(`${store.label}: ${e instanceof Error ? e.message : e}`);
     }
+    invalidateCampaigns(store.id);
   }
   revalidatePath("/indirimler");
   if (errors.length) back("hata", errors.join(" · "));

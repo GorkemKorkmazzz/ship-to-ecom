@@ -18,6 +18,7 @@ const GROUPS = [
       { href: "/indirimler", label: "İndirimler", d: "M9 9h.01M15 15h.01M16 8l-8 8M12 3l2.5 2H18v3.5L20 12l-2 3.5V19h-3.5L12 21l-2.5-2H6v-3.5L4 12l2-3.5V5h3.5L12 3z" },
     ],
   },
+  { title: "Analiz", items: [{ href: "/raporlar", label: "Raporlar", d: "M4 20V4M4 20h16M8 16v-5M12 16V8M16 16v-3" }] },
   {
     title: "Katalog",
     items: [

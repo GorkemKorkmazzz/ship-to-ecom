@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { imageUrl } from "@/lib/pricing";
 import { requireUser } from "@/lib/session";
@@ -10,7 +11,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ s
   const user = await requireUser();
   const sp = await searchParams;
   const sku = sp.sku ?? "";
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   const rows = await db.storeVariant.findMany({ where: { matchSku: sku, storeId: { in: stores.map((s) => s.id) } } });
   if (!rows.length) {
     return (

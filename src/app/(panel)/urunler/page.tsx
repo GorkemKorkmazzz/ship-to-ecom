@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { savePriceRule } from "@/app/actions";
+import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { ROUND_OPTIONS, applyRule, imageUrl } from "@/lib/pricing";
 import { requireUser } from "@/lib/session";
@@ -14,7 +15,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
   const user = await requireUser();
   const sp = await searchParams;
   const q = (sp.q ?? "").trim().toLocaleLowerCase("tr");
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   const variants = await db.storeVariant.findMany({ where: { storeId: { in: stores.map((s) => s.id) } } });
   const shared = new Map((await db.sharedItem.findMany({ where: { userId: user.id } })).map((s) => [s.sku, s.sharedStock]));
 

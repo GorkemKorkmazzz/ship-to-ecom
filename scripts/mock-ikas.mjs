@@ -56,8 +56,17 @@ http
           // Gerçek ikas'ta olduğu gibi müşteri verisi burada VAR; platform bunu hiç istememeli.
           customer: { fullName: "Gizli Müşteri", email: "gizli@example.com" },
           shippingMethod: "SHIPMENT",
-          orderPackages: orderNo % 3 === 0 ? [] : [{ orderPackageNumber: `${orderNo - 1}-1`, trackingInfo: { barcode: `7340000${orderNo}`, cargoCompany: "Deneme Kargo", trackingNumber: `TR${orderNo}99`, trackingLink: "https://example.com/takip" } }],
-          orderLineItems: [{ quantity: qty, finalPrice: 349.9, variant: { name: hit.p.name, sku: hit.v.sku, mainImageId: hit.v.imageId ?? null } }],
+          salesChannel: { name: orderNo % 2 ? "Online Mağaza" : "Instagram", type: "STOREFRONT" },
+          sessionInfo: {
+            referer: orderNo % 2 ? "https://www.google.com/search?q=x" : "https://l.instagram.com/",
+            utm: orderNo % 2 ? { source: "google", medium: "cpc", campaign: "kis-indirimi" } : { source: "instagram", medium: "social", campaign: null },
+            trafficSource: { source: orderNo % 2 ? "google" : "instagram", type: orderNo % 2 ? "SEARCH" : "SOCIAL" },
+          },
+          couponCode: orderNo % 2 ? "KASIM15" : null,
+          orderAdjustments: orderNo % 2 ? [{ name: "Kasım indirimi", type: "DECREMENT", amount: 52.5, campaignType: "RATIO" }] : [],
+          shippingAddress: { city: { name: ["İstanbul", "Ankara", "İzmir"][orderNo % 3] }, district: { name: ["Kadıköy", "Çankaya", "Bornova"][orderNo % 3] }, firstName: "Gizli", addressLine1: "Gizli adres" },
+          orderPackages: orderNo % 3 === 0 ? [] : [{ id: `pk-${orderNo}`, orderPackageNumber: `${orderNo - 1}-1`, orderPackageFulfillStatus: "READY_FOR_SHIPMENT", orderLineItemIds: [`li-${orderNo}`], trackingInfo: { barcode: `7340000${orderNo}`, cargoCompany: "Deneme Kargo", trackingNumber: `TR${orderNo}99`, trackingLink: "https://example.com/takip" } }],
+          orderLineItems: [{ id: `li-${orderNo}`, status: "UNFULFILLED", quantity: qty, finalPrice: 349.9, variant: { name: hit.p.name, sku: hit.v.sku, mainImageId: hit.v.imageId ?? null } }],
         });
       }
       return json({ ok: true, sku: hit.v.sku, stock: hit.v.stockCount });
@@ -154,6 +163,39 @@ http
         const since = Number(query.match(/gte:\s*(\d+)/)?.[1] ?? 0);
         const data = st.orders.filter((o) => o.updatedAt >= since).map((o) => ({ ...o, customer: undefined, updatedAt: undefined }));
         return json({ data: { listOrder: { hasNext: false, data } } });
+      }
+      if (op === "listAbandonedCheckouts") {
+        const item = (sku, q) => ({ quantity: q, finalPrice: 349.9, variant: { name: findVariant(st, ({ v }) => v.sku === sku)?.p.name ?? sku, sku, mainImageId: `img-${sku}` } });
+        const data = [
+          { id: "ck-1", status: "OPEN", recoveryStatus: "NOT_RECOVERED", recoverEmailStatus: "SENT", totalFinalPrice: 699.8, couponCode: null, shippingAddress: { city: { name: "İstanbul" } }, cart: { itemCount: 2, currencyCode: "TRY", lastActivityDate: Date.now() - 3600e3, items: [item("TS-001", 2)] } },
+          { id: "ck-2", status: "OPEN", recoveryStatus: "NOT_RECOVERED", recoverEmailStatus: "NOT_SENT", totalFinalPrice: 349.9, couponCode: "KASIM15", shippingAddress: null, cart: { itemCount: 1, currencyCode: "TRY", lastActivityDate: Date.now() - 7200e3, items: [item("SW-001", 1)] } },
+          { id: "ck-3", status: "COMPLETED", recoveryStatus: "RECOVERED", recoverEmailStatus: "SENT", totalFinalPrice: 1049.7, couponCode: null, shippingAddress: { city: { name: "Ankara" } }, cart: { itemCount: 3, currencyCode: "TRY", lastActivityDate: Date.now() - 86400e3, items: [item("TS-002", 3)] } },
+        ];
+        return json({ data: { listAbandonedCheckouts: { hasNext: false, data } } });
+      }
+      if (op === "fulfillOrder" || op === "updateOrderPackageStatus" || op === "cancelOrderLine") {
+        const i = variables.input;
+        const o = st.orders.find((x) => x.id === i.orderId);
+        if (!o) return json({ errors: [{ message: "sipariş yok" }] }, 400);
+        console.log(op + ":", JSON.stringify(i));
+        if (op === "fulfillOrder") {
+          const status = i.markAsReadyForShipment ? "READY_FOR_SHIPMENT" : "FULFILLED";
+          o.orderPackages.push({ id: `pk-${nextId++}`, orderPackageNumber: `${o.orderNumber}-1`, orderPackageFulfillStatus: status, orderLineItemIds: i.lines.map((l) => l.orderLineItemId), trackingInfo: { barcode: null, cargoCompany: null, trackingNumber: null, trackingLink: null, ...i.trackingInfoDetail } });
+          o.orderPackageStatus = status;
+        } else if (op === "updateOrderPackageStatus") {
+          for (const p of i.packages) {
+            const pk = o.orderPackages.find((x) => x.id === p.packageId);
+            if (!pk) return json({ errors: [{ message: "paket yok" }] }, 400);
+            pk.orderPackageFulfillStatus = p.status;
+            if (p.trackingInfo) pk.trackingInfo = { ...pk.trackingInfo, ...p.trackingInfo };
+            o.orderPackageStatus = p.status;
+          }
+        } else {
+          o.status = "CANCELLED"; o.orderPackageStatus = "CANCELLED";
+          for (const l of i.orderLineItems) if (l.restockItems) { const li = o.orderLineItems.find((x) => x.id === l.orderLineItemId); const hit = li && findVariant(st, ({ v }) => v.sku === li.variant.sku); if (hit) hit.v.stockCount += l.quantity; }
+        }
+        o.updatedAt = Date.now();
+        return json({ data: { [op]: { id: o.id } } });
       }
       if (op === "saveWebhook") return json({ data: { saveWebhook: [{ id: "w1" }] } });
       return json({ errors: [{ message: "bilinmeyen sorgu" }] }, 400);

@@ -1,6 +1,6 @@
 import Link from "next/link";
-import { db } from "@/lib/db";
-import { listCampaigns, type RemoteCampaign } from "@/lib/ikas";
+import { getCampaigns, getStores } from "@/lib/cache";
+import type { RemoteCampaign } from "@/lib/ikas";
 import { requireUser } from "@/lib/session";
 import { Flash, PageHeader, StoreBadge, fmtDate } from "../ui";
 import { createCampaign, removeCampaign } from "./actions";
@@ -15,7 +15,7 @@ const TYPE: Record<string, string> = {
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   if (!stores.length) {
     return (
       <div className="card mx-auto max-w-lg text-center">
@@ -25,8 +25,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
     );
   }
 
-  // Kampanyalar doğrudan ikas'tan okunur; aynı ad + türdekiler tek satırda birleştirilir.
-  const lists = await Promise.allSettled(stores.map((s) => listCampaigns(s)));
+  // Kampanyalar ikas'tan okunur (60 sn önbellek; ekleme/silmede hemen yenilenir); aynı ad + türdekiler tek satırda birleştirilir.
+  const lists = await Promise.allSettled(stores.map((s) => getCampaigns(s.id)));
   const errors = lists.flatMap((l, i) => (l.status === "rejected" ? [`${stores[i].label}: ${l.reason instanceof Error ? l.reason.message : l.reason}`] : []));
   type Group = { c: RemoteCampaign; usage: number; in: { storeIndex: number; storeId: string; id: string }[] };
   const groups = new Map<string, Group>();

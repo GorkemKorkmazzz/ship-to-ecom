@@ -1,10 +1,14 @@
 import Link from "next/link";
 import type { Prisma } from "@prisma/client";
+import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { imageUrl } from "@/lib/pricing";
 import { requireUser } from "@/lib/session";
 import { Thumb } from "../thumb";
 import { Flash, PageHeader, StoreBadge, SyncButton, fmtDate, fmtMoney } from "../ui";
+import { deleteOrders, restoreOrders, updateOrder } from "./actions";
+import { BulkBar, ConfirmButton } from "./bulk";
+import { OrderTabs } from "./tabs";
 
 const PER_PAGE = 30;
 const G = "bg-emerald-100 text-emerald-700", A = "bg-amber-100 text-amber-800", R = "bg-red-100 text-red-700", N = "bg-gray-100 text-gray-700", B = "bg-sky-100 text-sky-700";
@@ -38,7 +42,7 @@ function Status({ map, value }: { map: Record<string, [string, string]>; value: 
   return <span className={`badge whitespace-nowrap ${cls}`}>{label}</span>;
 }
 
-type Pkg = { number: string; barcode: string | null; cargoCompany: string | null; trackingNumber: string | null; trackingLink: string | null };
+type Pkg = { id?: string | null; status?: string | null; number: string; barcode: string | null; cargoCompany: string | null; trackingNumber: string | null; trackingLink: string | null };
 const parsePackages = (json: string): Pkg[] => {
   try {
     return JSON.parse(json);
@@ -48,15 +52,17 @@ const parsePackages = (json: string): Pkg[] => {
 };
 const safeLink = (u: string | null) => (u && /^https?:\/\//i.test(u) ? u : null);
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string; magaza?: string; sayfa?: string; durum?: string; q?: string }> }) {
+export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string; magaza?: string; sayfa?: string; durum?: string; q?: string; silinen?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   const page = Math.max(1, Number(sp.sayfa) || 1);
   const selected = stores.find((s) => s.id === sp.magaza);
   const filter = FILTERS.find((f) => f[0] === sp.durum);
   const q = (sp.q ?? "").trim().replace(/^#/, "");
+  const trash = sp.silinen === "1";
   const where: Prisma.OrderWhereInput = {
+    deletedAt: trash ? { not: null } : null,
     storeId: selected ? selected.id : { in: stores.map((s) => s.id) },
     ...(filter ? { packageStatus: { in: filter[2] } } : {}),
     ...(q ? { OR: [{ orderNumber: { contains: q } }, { lines: { some: { OR: [{ sku: { contains: q } }, { name: { contains: q } }] } } }, { packages: { contains: q } }] } : {}),
@@ -73,6 +79,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
     if (magaza) p.set("magaza", magaza);
     if (durum) p.set("durum", durum);
     if (q) p.set("q", q);
+    if (trash) p.set("silinen", "1");
     if (patch.sayfa && patch.sayfa > 1) p.set("sayfa", String(patch.sayfa));
     const s = p.toString();
     return s ? `/siparisler?${s}` : "/siparisler";
@@ -86,6 +93,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
         <SyncButton path="/siparisler" />
       </PageHeader>
       <Flash ok={sp.ok} hata={sp.hata} />
+      <OrderTabs active="siparisler" />
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="flex gap-1 overflow-x-auto rounded-lg border border-gray-200 bg-white p-1">
@@ -100,6 +108,9 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
             <Link key={key} href={link({ durum: key })} className={pill(filter?.[0] === key)}>{label}</Link>
           ))}
         </div>
+        <Link href={trash ? "/siparisler" : "/siparisler?silinen=1"} className={`rounded-lg border px-3 py-1.5 text-sm font-medium ${trash ? "border-red-300 bg-red-50 text-red-700" : "border-gray-200 bg-white text-gray-600 hover:bg-gray-50"}`}>
+          {trash ? "← Siparişlere dön" : "Silinenler"}
+        </Link>
         <form className="ml-auto flex gap-2">
           {selected && <input type="hidden" name="magaza" value={selected.id} />}
           {filter && <input type="hidden" name="durum" value={filter[0]} />}
@@ -108,6 +119,10 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
         </form>
       </div>
 
+      <form id="bulk" action={trash ? restoreOrders : deleteOrders}>
+        <input type="hidden" name="back" value={link({ sayfa: page })} />
+        <BulkBar trash={trash} total={orders.length} />
+      </form>
       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
         <div className="hidden grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_minmax(0,0.9fr)] gap-4 border-b border-gray-200 bg-gray-50 px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-gray-500 lg:grid">
           <span>Sipariş</span>
@@ -127,6 +142,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
             <details key={o.id} className="group border-b border-gray-100 last:border-b-0">
               <summary className="grid cursor-pointer list-none grid-cols-1 gap-x-4 gap-y-2 px-4 py-3 hover:bg-gray-50 lg:grid-cols-[minmax(0,2.2fr)_minmax(0,1fr)_minmax(0,1.6fr)_minmax(0,1.5fr)_minmax(0,0.9fr)] lg:items-center [&::-webkit-details-marker]:hidden">
                 <div className="flex min-w-0 items-center gap-3">
+                  <input type="checkbox" form="bulk" name="ids" value={o.id} aria-label={`#${o.orderNumber} seç`} className="h-4 w-4 shrink-0" />
                   <div className="flex shrink-0 -space-x-3">
                     {o.lines.slice(0, 3).map((l) => (
                       <Thumb key={l.id} src={imageUrl(store.merchantId, l.imageId)} alt={l.name || l.sku} size={44} />
@@ -198,6 +214,37 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
                         </div>
                       );
                     })}
+                    <form action={trash ? restoreOrders : deleteOrders} className="flex items-center justify-between rounded-lg border border-gray-200 bg-white p-3 text-sm">
+                      <input type="hidden" name="ids" value={o.id} />
+                      <input type="hidden" name="back" value={link({ sayfa: page })} />
+                      <span className="text-gray-600">{trash ? "Bu sipariş silinmiş." : "Siparişi panelden kaldır"}</span>
+                      {trash ? <button className="btn-ghost">Geri al</button> : <ConfirmButton message={`#${o.orderNumber} numaralı sipariş panelden silinsin mi? ikas'taki sipariş etkilenmez.`}>Sil</ConfirmButton>}
+                    </form>
+                    <form action={updateOrder} hidden={trash} className="rounded-lg border border-indigo-200 bg-white p-3 text-sm">
+                      <input type="hidden" name="id" value={o.id} />
+                      <input type="hidden" name="back" value={link({ sayfa: page })} />
+                      <div className="font-medium">Durumu güncelle</div>
+                      <p className="text-xs text-gray-500">Değişiklik doğrudan ikas&apos;a yazılır.</p>
+                      <select className="input mt-2" name="action" defaultValue="" required>
+                        <option value="" disabled>İşlem seçin</option>
+                        <option value="hazir">Kargoya hazır</option>
+                        <option value="kargolandi">Kargolandı</option>
+                        <option value="teslim">Teslim edildi</option>
+                        <option value="iptal">Siparişi iptal et</option>
+                      </select>
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        <input className="input" name="cargoCompany" placeholder="Kargo firması" defaultValue={first?.cargoCompany ?? ""} />
+                        <input className="input" name="trackingNumber" placeholder="Takip no" defaultValue={first?.trackingNumber ?? ""} />
+                      </div>
+                      <input className="input mt-2" name="trackingLink" placeholder="Takip bağlantısı (https://…)" defaultValue={safeLink(first?.trackingLink ?? null) ?? ""} />
+                      <label className="mt-2 flex items-center gap-2 text-xs"><input type="checkbox" name="notify" /> ikas müşteriye bildirim göndersin</label>
+                      <details className="mt-2 text-xs text-gray-600">
+                        <summary className="cursor-pointer">İptal seçenekleri</summary>
+                        <label className="mt-1 flex items-center gap-2"><input type="checkbox" name="restock" defaultChecked /> Ürünleri stoğa geri ekle</label>
+                        <label className="mt-1 flex items-center gap-2 text-red-700"><input type="checkbox" name="confirm" /> İptali onaylıyorum (geri alınamaz)</label>
+                      </details>
+                      <button className="btn mt-3 w-full">ikas&apos;ta güncelle</button>
+                    </form>
                     {!pkgs.length && <p className="rounded-lg border border-dashed border-gray-300 bg-white p-3 text-xs text-gray-500">ikas&apos;ta bu sipariş için henüz paket oluşturulmamış. Barkod, ikas&apos;ta kargo etiketi oluşunca senkronla gelir.</p>}
                   </div>
                 </div>

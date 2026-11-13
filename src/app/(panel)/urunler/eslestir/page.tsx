@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { Flash, PageHeader, StoreBadge } from "../../ui";
@@ -9,7 +10,7 @@ const norm = (s: string) => s.toLocaleLowerCase("tr").replace(/[^a-z0-9çğıö�
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   if (stores.length < 2) {
     return (
       <div className="card mx-auto max-w-lg text-center">

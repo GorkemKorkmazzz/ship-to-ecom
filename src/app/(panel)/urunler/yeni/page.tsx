@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { db } from "@/lib/db";
+import { getStores } from "@/lib/cache";
 import { listNamed } from "@/lib/ikas";
 import { requireUser } from "@/lib/session";
 import { PageHeader } from "../../ui";
@@ -7,7 +7,7 @@ import { ProductForm } from "./form";
 
 export default async function Page() {
   const user = await requireUser();
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
   if (!stores.length) {
     return (
       <div className="card mx-auto max-w-lg text-center">

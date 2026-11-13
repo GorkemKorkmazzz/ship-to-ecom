@@ -1,12 +1,12 @@
 import { addStore, deleteStore, setupWebhooks } from "@/app/actions";
-import { db } from "@/lib/db";
+import { getStores } from "@/lib/cache";
 import { requireUser } from "@/lib/session";
 import { Flash, PageHeader, StoreBadge, SyncButton, fmtDate } from "../ui";
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
 
   return (
     <>

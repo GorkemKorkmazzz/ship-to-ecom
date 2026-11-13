@@ -1,6 +1,7 @@
 import type { Store, StoreVariant } from "@prisma/client";
+import { invalidateUser } from "./cache";
 import { db } from "./db";
-import { getMerchantId, listOrders, listStockLocations, listVariants, setPrices, setStocks, type PriceWrite, type RemoteVariant } from "./ikas";
+import { getMerchantId, listAbandonedCheckouts, listOrders, listStockLocations, listVariants, setPrices, setStocks, type PriceWrite, type RemoteVariant } from "./ikas";
 import { applyRule } from "./pricing";
 import { publish, reconcile } from "./reconcile";
 
@@ -24,6 +25,8 @@ export function syncUser(userId: string): Promise<void> {
       } while (rerun.has(userId));
     } finally {
       running.delete(userId);
+      // Senkron veriyi değiştirdi: rapor/pano önbelleği hemen düşer.
+      invalidateUser(userId);
     }
   })();
   running.set(userId, p);
@@ -71,7 +74,8 @@ async function runSync(userId: string) {
 
   for (const { store } of loaded) {
     try {
-      await syncOrders(store);
+      await syncOrders(store, logs);
+      await syncCarts(store, logs);
       await db.store.update({ where: { id: store.id }, data: { lastSyncAt: new Date(), lastError: null } });
     } catch (e) {
       await fail(store, e, logs);
@@ -268,12 +272,22 @@ async function applyPriceRule(
   if (writes.length > 30) logs.push({ level: "info", storeLabel: target.store.label, message: `Fiyat kuralı ${writes.length - 30} SKU'da daha uygulandı.` });
 }
 
-async function syncOrders(store: Store) {
+const hostOf = (url: string | null | undefined) => {
+  if (!url) return null;
+  try {
+    return new URL(url).host.replace(/^www\./, "") || null;
+  } catch {
+    return null;
+  }
+};
+
+async function syncOrders(store: Store, logs: Log[]) {
   const startedAt = new Date();
   const since = store.lastOrderSyncAt
     ? new Date(store.lastOrderSyncAt.getTime() - 5 * 60_000)
     : new Date(Date.now() - 30 * 24 * 3600_000); // ilk senkron: son 30 gün
-  const orders = await listOrders(store, since);
+  const { orders, rich } = await listOrders(store, since);
+  if (!rich && orders.length) logs.push({ level: "warn", storeLabel: store.label, message: "Sipariş kaynak/kampanya alanları ikas'tan okunamadı; raporlar bu siparişler için eksik kalır." });
   for (const o of orders) {
     const data = {
       orderNumber: o.orderNumber ?? "-",
@@ -286,13 +300,32 @@ async function syncOrders(store: Store) {
       shippingMethod: o.shippingMethod,
       packages: JSON.stringify(
         (o.orderPackages ?? []).map((p) => ({
+          id: p.id ?? null,
           number: p.orderPackageNumber,
+          status: p.orderPackageFulfillStatus ?? null,
+          lineIds: p.orderLineItemIds ?? [],
           barcode: p.trackingInfo?.barcode ?? null,
           cargoCompany: p.trackingInfo?.cargoCompany ?? null,
           trackingNumber: p.trackingInfo?.trackingNumber ?? null,
           trackingLink: p.trackingInfo?.trackingLink ?? null,
         })),
       ),
+      ...(rich
+        ? {
+            salesChannel: o.salesChannel?.name ?? o.salesChannel?.type ?? null,
+            trafficSource: o.sessionInfo?.trafficSource?.source ?? o.sessionInfo?.trafficSource?.type ?? null,
+            referer: hostOf(o.sessionInfo?.referer),
+            utmSource: o.sessionInfo?.utm?.source ?? null,
+            utmMedium: o.sessionInfo?.utm?.medium ?? null,
+            utmCampaign: o.sessionInfo?.utm?.campaign ?? null,
+            city: o.shippingAddress?.city?.name ?? null,
+            district: o.shippingAddress?.district?.name ?? null,
+            couponCode: o.couponCode ?? null,
+            campaigns: JSON.stringify(
+              (o.orderAdjustments ?? []).filter((a) => a.type === "DECREMENT").map((a) => ({ name: a.name, type: a.campaignType, amount: a.amount })),
+            ),
+          }
+        : {}),
     };
     const lines = o.orderLineItems.map((l) => ({
       sku: l.variant?.sku ?? "",
@@ -300,6 +333,8 @@ async function syncOrders(store: Store) {
       quantity: l.quantity,
       finalPrice: l.finalPrice,
       imageId: l.variant?.mainImageId ?? null,
+      ikasLineId: l.id ?? null,
+      status: l.status ?? null,
     }));
     await db.order.upsert({
       where: { storeId_ikasOrderId: { storeId: store.id, ikasOrderId: o.id } },
@@ -308,4 +343,40 @@ async function syncOrders(store: Store) {
     });
   }
   await db.store.update({ where: { id: store.id }, data: { lastOrderSyncAt: startedAt } });
+}
+
+/** Terk edilmiş sepetleri çeker. Hata olursa senkronun geri kalanını durdurmaz. */
+async function syncCarts(store: Store, logs: Log[]) {
+  const startedAt = new Date();
+  const since = store.lastCartSyncAt ? new Date(store.lastCartSyncAt.getTime() - 5 * 60_000) : new Date(Date.now() - 30 * 24 * 3600_000);
+  let carts;
+  try {
+    carts = await listAbandonedCheckouts(store, since);
+  } catch (e) {
+    logs.push({ level: "warn", storeLabel: store.label, message: `Terk edilmiş sepetler alınamadı: ${e instanceof Error ? e.message : e}` });
+    return;
+  }
+  for (const c of carts) {
+    const data = {
+      status: c.status,
+      recoveryStatus: c.recoveryStatus,
+      emailStatus: c.recoverEmailStatus,
+      total: c.totalFinalPrice,
+      currency: c.cart?.currencyCode ?? "TRY",
+      itemCount: c.cart?.itemCount ?? c.cart?.items.reduce((a, i) => a + i.quantity, 0) ?? 0,
+      couponCode: c.couponCode,
+      city: c.shippingAddress?.city?.name ?? null,
+      lastActivityAt: c.cart?.lastActivityDate ? new Date(c.cart.lastActivityDate) : null,
+      linesJson: JSON.stringify(
+        (c.cart?.items ?? []).map((i) => ({ name: i.variant?.name ?? "", sku: i.variant?.sku ?? "", imageId: i.variant?.mainImageId ?? null, quantity: i.quantity, price: i.finalPrice })),
+      ),
+      seenAt: startedAt,
+    };
+    await db.abandonedCart.upsert({
+      where: { storeId_ikasId: { storeId: store.id, ikasId: c.id } },
+      create: { ...data, storeId: store.id, ikasId: c.id },
+      update: data,
+    });
+  }
+  await db.store.update({ where: { id: store.id }, data: { lastCartSyncAt: startedAt } });
 }

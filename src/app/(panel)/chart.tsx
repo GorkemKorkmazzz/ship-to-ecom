@@ -30,8 +30,8 @@ export function SalesChart({ days, series, fmt }: { days: string[]; series: Seri
           <text key={d} x={x(i)} y={H - 8} textAnchor="middle" fontSize="12" fill="#6b7280">{d}</text>
         ) : null,
       )}
-      {series.map((s) => (
-        <g key={s.label}>
+      {series.map((s, si) => (
+        <g key={si}>
           <polyline fill="none" stroke={s.color} strokeWidth="2.5" strokeLinejoin="round" strokeLinecap="round" points={s.values.map((v, i) => `${x(i)},${y(v)}`).join(" ")} />
           {s.values.map((v, i) => (
             <circle key={i} cx={x(i)} cy={y(v)} r={v > 0 ? 3.5 : 0} fill={s.color}>

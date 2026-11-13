@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { getDashboardOrders, getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
 import { SalesChart } from "../chart";
@@ -12,7 +13,7 @@ const dayLabel = (d: Date, long: boolean) =>
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string; gun?: string; magaza?: string }> }) {
   const user = await requireUser();
   const sp = await searchParams;
-  const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });
+  const stores = await getStores(user.id);
 
   if (!stores.length) {
     return (
@@ -31,7 +32,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
   since.setHours(0, 0, 0, 0);
 
   const [orders, sharedCount, outOfStock, variantCount] = await Promise.all([
-    db.order.findMany({ where: { storeId: { in: shown.map((s) => s.id) }, orderedAt: { gte: since } }, include: { lines: true } }),
+    getDashboardOrders(user.id, shown.map((s) => s.id), since.toISOString()),
     db.sharedItem.count({ where: { userId: user.id } }),
     db.sharedItem.count({ where: { userId: user.id, sharedStock: { lte: 0 } } }),
     db.storeVariant.groupBy({ by: ["matchSku"], where: { storeId: { in: stores.map((s) => s.id) } } }).then((r) => r.length),
@@ -58,7 +59,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
     const values = keys.map(() => 0);
     for (const o of orders) {
       if (o.storeId !== s.id || !o.orderedAt) continue;
-      const i = keys.indexOf(dayKey(o.orderedAt));
+      const i = keys.indexOf(dayKey(new Date(o.orderedAt)));
       if (i >= 0) values[i] += o.totalFinalPrice;
     }
     return { label: s.label, color: STORE_HEX[stores.indexOf(s) % 2], values };
@@ -128,8 +129,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
         </dl>
         <div className="px-4 pb-2 pt-5">
           <div className="mb-2 flex flex-wrap gap-4 px-2 text-sm text-gray-600">
-            {series.map((s) => (
-              <span key={s.label} className="flex items-center gap-2">
+            {series.map((s, si) => (
+              <span key={si} className="flex items-center gap-2">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: s.color }} />
                 {s.label}
               </span>

@@ -4,6 +4,7 @@ import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { encrypt, randomToken } from "@/lib/crypto";
+import { invalidateUser } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { TRIAL_DAYS, planById } from "@/lib/plans";
 import { fetchToken, normalizeStoreName, registerWebhooks } from "@/lib/ikas";
@@ -89,6 +90,7 @@ export async function deleteStore(fd: FormData) {
     db.sharedItem.deleteMany({ where: { userId: user.id } }),
     db.storeVariant.updateMany({ where: { store: { userId: user.id } }, data: { lastSeenStock: null } }),
   ]);
+  invalidateUser(user.id);
   back("/magazalar", "ok", "Mağaza kaldırıldı.");
 }
 

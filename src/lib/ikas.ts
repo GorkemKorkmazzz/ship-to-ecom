@@ -211,42 +211,144 @@ export type RemoteOrder = {
   shippingMethod: string | null;
   orderPackages:
     | {
+        id?: string;
         orderPackageNumber: string;
+        orderPackageFulfillStatus?: string | null;
+        orderLineItemIds?: string[] | null;
         trackingInfo: { barcode: string | null; cargoCompany: string | null; trackingNumber: string | null; trackingLink: string | null } | null;
       }[]
     | null;
   orderLineItems: {
+    id?: string;
+    status?: string | null;
     quantity: number;
     finalPrice: number | null;
     variant: { name: string | null; sku: string | null; mainImageId: string | null };
   }[];
+  // Rapor alanları (yalnızca zengin sorguda gelir)
+  salesChannel?: { name: string | null; type: string | null } | null;
+  sessionInfo?: {
+    referer: string | null;
+    utm: { source: string | null; medium: string | null; campaign: string | null } | null;
+    trafficSource: { source: string | null; type: string | null } | null;
+  } | null;
+  couponCode?: string | null;
+  orderAdjustments?: { name: string; type: string; amount: number; campaignType: string | null }[] | null;
+  shippingAddress?: { city: { name: string } | null; district: { name: string | null } | null } | null;
 };
 
-/** Siparişleri getirir. Müşteri/adres alanları sorguda yoktur. */
-export async function listOrders(store: Store, updatedSince: Date): Promise<RemoteOrder[]> {
+const ORDER_CORE = `id orderNumber status orderPaymentStatus orderPackageStatus currencyCode totalFinalPrice orderedAt shippingMethod`;
+const TRACKING = `trackingInfo { barcode cargoCompany trackingNumber trackingLink }`;
+// Müşteri adı, e-posta, telefon ve açık adres İSTENMEZ; adresten yalnızca il/ilçe adı alınır.
+const ORDER_RICH = `${ORDER_CORE}
+  orderPackages { id orderPackageNumber orderPackageFulfillStatus orderLineItemIds ${TRACKING} }
+  orderLineItems { id status quantity finalPrice variant { name sku mainImageId } }
+  salesChannel { name type }
+  sessionInfo { referer utm { source medium campaign } trafficSource { source type } }
+  couponCode
+  orderAdjustments { name type amount campaignType }
+  shippingAddress { city { name } district { name } }`;
+const ORDER_BASIC = `${ORDER_CORE}
+  orderPackages { orderPackageNumber ${TRACKING} }
+  orderLineItems { quantity finalPrice variant { name sku mainImageId } }`;
+
+/** Siparişleri getirir. Zengin sorgu reddedilirse temel alanlarla tekrar dener (rich=false döner). */
+export async function listOrders(store: Store, updatedSince: Date): Promise<{ orders: RemoteOrder[]; rich: boolean }> {
   type Resp = { listOrder: { hasNext: boolean; data: RemoteOrder[] } };
   const since = Math.floor(updatedSince.getTime());
-  const out: RemoteOrder[] = [];
-  for (let page = 1; page <= 500; page++) {
+  const run = async (fields: string) => {
+    const out: RemoteOrder[] = [];
+    for (let page = 1; page <= 500; page++) {
+      const d = await gql<Resp>(
+        store,
+        `query($page: Int!) { listOrder(pagination: { limit: 50, page: $page }, updatedAt: { gte: ${since} }) { hasNext data { ${fields} } } }`,
+        { page },
+      );
+      out.push(...d.listOrder.data);
+      if (!d.listOrder.hasNext) break;
+    }
+    return out;
+  };
+  try {
+    return { orders: await run(ORDER_RICH), rich: true };
+  } catch (e) {
+    if (!(e instanceof IkasError) || /ulaşılamadı/.test(e.message)) throw e;
+    return { orders: await run(ORDER_BASIC), rich: false };
+  }
+}
+
+// ───────────── Terk edilmiş sepetler ─────────────
+export type RemoteCheckout = {
+  id: string;
+  status: string;
+  recoveryStatus: string | null;
+  recoverEmailStatus: string | null;
+  totalFinalPrice: number;
+  couponCode: string | null;
+  shippingAddress: { city: { name: string } | null } | null;
+  cart: {
+    itemCount: number | null;
+    currencyCode: string | null;
+    lastActivityDate: number | null;
+    items: { quantity: number; finalPrice: number | null; variant: { name: string | null; sku: string | null; mainImageId: string | null } }[];
+  } | null;
+};
+
+/** Terk edilmiş sepetleri getirir; müşteri alanı sorguda yoktur. */
+export async function listAbandonedCheckouts(store: Store, updatedSince: Date): Promise<RemoteCheckout[]> {
+  type Resp = { listAbandonedCheckouts: { hasNext: boolean; data: RemoteCheckout[] } };
+  const since = Math.floor(updatedSince.getTime());
+  const out: RemoteCheckout[] = [];
+  for (let page = 1; page <= 100; page++) {
     const d = await gql<Resp>(
       store,
       `query($page: Int!) {
-        listOrder(pagination: { limit: 50, page: $page }, updatedAt: { gte: ${since} }) {
+        listAbandonedCheckouts(input: {}, pagination: { limit: 50, page: $page }, updatedAt: { gte: ${since} }) {
           hasNext
           data {
-            id orderNumber status orderPaymentStatus orderPackageStatus
-            currencyCode totalFinalPrice orderedAt shippingMethod
-            orderPackages { orderPackageNumber trackingInfo { barcode cargoCompany trackingNumber trackingLink } }
-            orderLineItems { quantity finalPrice variant { name sku mainImageId } }
+            id status recoveryStatus recoverEmailStatus totalFinalPrice couponCode
+            shippingAddress { city { name } }
+            cart { itemCount currencyCode lastActivityDate items { quantity finalPrice variant { name sku mainImageId } } }
           }
         }
       }`,
       { page },
     );
-    out.push(...d.listOrder.data);
-    if (!d.listOrder.hasNext) break;
+    out.push(...d.listAbandonedCheckouts.data);
+    if (!d.listAbandonedCheckouts.hasNext) break;
   }
   return out;
+}
+
+// ───────────── Sipariş durumu güncelleme ─────────────
+export type Tracking = { cargoCompany?: string; trackingNumber?: string; trackingLink?: string; barcode?: string; isSendNotification?: boolean };
+const clean = (t?: Tracking) => (t ? Object.fromEntries(Object.entries(t).filter(([, v]) => v !== "" && v !== undefined)) : undefined);
+
+/** Paketlenmemiş satırlardan paket oluşturur (kargoya hazır ya da kargolandı). */
+export async function fulfillOrder(store: Store, orderId: string, lines: { orderLineItemId: string; quantity: number }[], opts: { readyOnly: boolean; notify: boolean; tracking?: Tracking }) {
+  const tracking = clean(opts.tracking);
+  await gql(store, `mutation($input: FulFillOrderInput!) { fulfillOrder(input: $input) { id } }`, {
+    input: {
+      orderId, lines,
+      markAsReadyForShipment: opts.readyOnly,
+      sendNotificationToCustomer: opts.notify,
+      ...(tracking && Object.keys(tracking).length ? { trackingInfoDetail: tracking } : {}),
+    },
+  });
+}
+
+/** Mevcut paketin durumunu günceller. */
+export async function updatePackageStatus(store: Store, orderId: string, packageId: string, status: string, tracking?: Tracking) {
+  const t = clean(tracking);
+  await gql(store, `mutation($input: UpdateOrderPackageStatusInput!) { updateOrderPackageStatus(input: $input) { id } }`, {
+    input: { orderId, packages: [{ packageId, status, ...(t && Object.keys(t).length ? { trackingInfo: t } : {}) }] },
+  });
+}
+
+export async function cancelOrderLines(store: Store, orderId: string, lines: { orderLineItemId: string; quantity: number }[], restockItems: boolean) {
+  await gql(store, `mutation($input: CancelOrderLineInput!) { cancelOrderLine(input: $input) { id } }`, {
+    input: { orderId, orderLineItems: lines.map((l) => ({ ...l, restockItems })) },
+  });
 }
 
 const WEBHOOK_SCOPES = ["store/order/created", "store/order/updated", "store/stock/updated"];

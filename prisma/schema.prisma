@@ -55,6 +55,7 @@ model Store {
   webhookSecret   String
   webhooksActive  Boolean        @default(false)
   lastOrderSyncAt DateTime?
+  lastCartSyncAt  DateTime?
   lastSyncAt      DateTime?
   lastError       String?
   merchantId      String? // görsel adresleri için
@@ -68,6 +69,7 @@ model Store {
   variants        StoreVariant[]
   aliases         SkuAlias[]
   orders          Order[]
+  carts           AbandonedCart[]
 
   @@unique([userId, storeName])
 }
@@ -208,6 +210,19 @@ model Order {
   shippingMethod  String?
   // Kargo paketleri (JSON): [{ number, barcode, cargoCompany, trackingNumber, trackingLink }]
   packages        String      @default("[]")
+  // Rapor alanları (kişisel veri içermez: yalnızca kanal, kaynak, il/ilçe, kampanya)
+  salesChannel    String?
+  trafficSource   String?
+  referer         String? // yalnızca alan adı
+  utmSource       String?
+  utmMedium       String?
+  utmCampaign     String?
+  city            String?
+  district        String?
+  couponCode      String?
+  campaigns       String      @default("[]") // [{ name, type, amount }]
+  // Panelden silindi (ikas'ta durur). Senkron tekrar getirse de gizli kalır.
+  deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   lines           OrderLine[]
 
@@ -224,6 +239,30 @@ model OrderLine {
   quantity   Float
   finalPrice Float?
   imageId    String?
+  ikasLineId String?
+  status     String?
+}
+
+// Terk edilmiş sepet — müşteri adı, e-posta, telefon alınmaz.
+model AbandonedCart {
+  id             String    @id @default(cuid())
+  storeId        String
+  store          Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  ikasId         String
+  status         String // OPEN | COMPLETED | FREEZE | KILLED
+  recoveryStatus String? // NOT_RECOVERED | RECOVERED
+  emailStatus    String? // NOT_SENT | SENT
+  total          Float
+  currency       String    @default("TRY")
+  itemCount      Float     @default(0)
+  couponCode     String?
+  city           String?
+  lastActivityAt DateTime?
+  linesJson      String    @default("[]") // [{ name, sku, imageId, quantity, price }]
+  seenAt         DateTime  @default(now())
+
+  @@unique([storeId, ikasId])
+  @@index([storeId, lastActivityAt])
 }
 
 model SyncLog {

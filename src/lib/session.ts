@@ -1,4 +1,5 @@
 import { SignJWT, jwtVerify } from "jose";
+import { cache } from "react";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { secretKeyBytes } from "./crypto";
@@ -37,10 +38,13 @@ export async function getUserId(): Promise<string | null> {
   }
 }
 
+// Aynı istekte layout ve sayfa kullanıcıyı bir kez okur (istekler arası saklanmaz).
+const loadUser = cache((id: string) => db.user.findUnique({ where: { id } }));
+
 /** Oturum yoksa girişe yönlendirir. */
 export async function requireUser() {
   const id = await getUserId();
-  const user = id ? await db.user.findUnique({ where: { id } }) : null;
+  const user = id ? await loadUser(id) : null;
   if (!user || user.suspended) redirect("/giris");
   return user;
 }
