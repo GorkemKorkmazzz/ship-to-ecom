@@ -1,3 +1,4 @@
+import { storeHost } from "@/lib/platforms";
 import Link from "next/link";
 import { getDashboardOrders, getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
@@ -62,7 +63,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
       const i = keys.indexOf(dayKey(new Date(o.orderedAt)));
       if (i >= 0) values[i] += o.totalFinalPrice;
     }
-    return { label: s.label, color: STORE_HEX[stores.indexOf(s) % 2], values };
+    return { label: s.label, color: STORE_HEX[stores.indexOf(s) % STORE_HEX.length], values };
   });
 
   const bySku = new Map<string, { sku: string; name: string; qty: number; revenue: number }>();
@@ -149,7 +150,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
                   <span className="badge bg-gray-100 text-gray-600">%{total ? Math.round((sum / total) * 100) : 0}</span>
                 </div>
                 <div className="mt-2 text-xl font-semibold tabular-nums">{money(sum)}</div>
-                <div className="text-xs text-gray-500">{mine.length} sipariş · {s.storeName}.myikas.com</div>
+                <div className="text-xs text-gray-500">{mine.length} sipariş · {storeHost(s)}</div>
                 {s.lastError && <p className="mt-2 rounded bg-red-50 px-2 py-1 text-xs text-red-700">{s.lastError}</p>}
               </Link>
             );

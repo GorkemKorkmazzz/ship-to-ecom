@@ -25,6 +25,28 @@ Bu iki komut yalnızca sahte API ile deneme içindir; gerçek mağazalar için d
 Mağaza adları `magaza-a` ve `magaza-b`; Client ID/Secret herhangi bir değer olabilir.
 Sipariş simülasyonu: `curl -X POST "localhost:4010/_order?store=magaza-a&sku=TS-001&qty=2"`
 
+## T-Soft mağazası (ikinci platform)
+
+Senkron artık platformdan bağımsız: `src/lib/platforms/` altında her platform bir adaptördür (`ikas.ts`, `tsoft.ts`) ve `src/lib/sync.ts` yalnızca ortak arayüzü (`types.ts`) kullanır. Bir ikas mağazası ile bir T-Soft mağazası aynı SKU üzerinden ortak stoğa bağlanabilir.
+
+- T-Soft tarafı Admin API 2026-01 ile çalışır; mağaza, T-Soft panelindeki onay ekranı üzerinden bağlanır (`/api/tsoft/baglan` → `/api/tsoft/callback`).
+- Gerekli ortam değişkenleri: `TSOFT_CLIENT_ID`, `TSOFT_CLIENT_SECRET` (T-Soft Partner panelinden). Boşsa bağlama düğmesi görünmez.
+- T-Soft mağazalarında şimdilik: ürün/stok/fiyat okuma, stok ve fiyat yazma, sipariş okuma. Kampanya, ürün ekleme, sipariş durumu güncelleme, terk edilmiş sepet ve webhook yalnızca ikas'ta.
+- Müşteri verisi kapsamı istenmez; adresten yalnızca il/ilçe okunur.
+
+Sahte API'lerle uçtan uca deneme (gerçek mağazalara ve `dev.db`'ye dokunmaz):
+
+```bash
+DATABASE_URL=file:./test.db npx prisma db push --skip-generate
+DATABASE_URL=file:./test.db APP_SECRET=<64 hex> node --experimental-strip-types scripts/seed-test.ts
+node scripts/mock-ikas.mjs & node scripts/mock-tsoft.mjs &
+# test sunucusu: .claude/launch.json içindeki "test" yapılandırması (port 3100)
+curl -H "Authorization: Bearer test" localhost:3100/api/cron/sync
+curl -X POST "localhost:4020/_order?sku=TS-001&qty=2"   # T-Soft'ta satış benzet
+```
+
+`src/lib/platforms/tsoft.ts` başındaki "gerçek mağazada doğrulanacaklar" listesi, belgede açık olmayan alanları içerir.
+
 ## Nasıl çalışır
 
 - `src/lib/reconcile.ts` — ortak stok hesabı (`npm test`).

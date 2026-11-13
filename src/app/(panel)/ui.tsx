@@ -30,10 +30,11 @@ export function PageHeader({ title, desc, children }: { title: string; desc?: st
   );
 }
 
-const STORE_COLORS = ["bg-sky-100 text-sky-700", "bg-amber-100 text-amber-800"];
-export const STORE_HEX = ["#0284c7", "#f59e0b"];
+// Mağaza sırasına göre renk; en geniş paketin mağaza hakkı kadar renk var.
+const STORE_COLORS = ["bg-sky-100 text-sky-700", "bg-amber-100 text-amber-800", "bg-emerald-100 text-emerald-700", "bg-violet-100 text-violet-700", "bg-rose-100 text-rose-700"];
+export const STORE_HEX = ["#0284c7", "#f59e0b", "#059669", "#7c3aed", "#e11d48"];
 export function StoreBadge({ label, index }: { label: string; index: number }) {
-  return <span className={`badge ${STORE_COLORS[index % 2]}`}>{label}</span>;
+  return <span className={`badge ${STORE_COLORS[index % STORE_COLORS.length]}`}>{label}</span>;
 }
 
 export const fmtDate = (d: Date | null | undefined) =>

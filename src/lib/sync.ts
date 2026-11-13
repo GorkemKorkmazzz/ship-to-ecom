@@ -1,7 +1,8 @@
 import type { Store, StoreVariant } from "@prisma/client";
 import { invalidateUser } from "./cache";
 import { db } from "./db";
-import { getMerchantId, listAbandonedCheckouts, listOrders, listStockLocations, listVariants, setPrices, setStocks, type PriceWrite, type RemoteVariant } from "./ikas";
+import { adapterFor } from "./platforms";
+import type { PriceWrite, RemoteVariant } from "./platforms/types";
 import { applyRule } from "./pricing";
 import { publish, reconcile } from "./reconcile";
 
@@ -42,22 +43,23 @@ async function runSync(userId: string) {
 
   for (const store of stores) {
     try {
+      const adapter = adapterFor(store);
       let locationId = store.stockLocationId;
       if (!locationId) {
-        const locs = await listStockLocations(store);
+        const locs = await adapter.listLocations(store);
         if (!locs.length) throw new Error("Mağazada stok lokasyonu bulunamadı.");
         locationId = locs[0].id;
         await db.store.update({ where: { id: store.id }, data: { stockLocationId: locationId } });
       }
-      if (!store.merchantId) {
+      if (!store.merchantId && adapter.getMerchantId) {
         // Görsel adresleri için gerekli; alınamazsa senkronu durdurmaz.
-        const merchantId = await getMerchantId(store).catch(() => null);
+        const merchantId = await adapter.getMerchantId(store).catch(() => null);
         if (merchantId) {
           await db.store.update({ where: { id: store.id }, data: { merchantId } });
           store.merchantId = merchantId;
         }
       }
-      const remote = await listVariants(store, locationId);
+      const remote = await adapter.listVariants(store, locationId);
       const rows = await saveVariants(store, remote, logs);
       loaded.push({ store, locationId, rows });
     } catch (e) {
@@ -191,7 +193,7 @@ async function reconcileStocks(
     loaded.map(async (l, i) => {
       if (!writes[i].length) return true;
       try {
-        await setStocks(l.store, l.locationId, writes[i]);
+        await adapterFor(l.store).setStocks(l.store, l.locationId, writes[i]);
         return true;
       } catch (e) {
         await fail(l.store, e, logs);
@@ -259,7 +261,7 @@ async function applyPriceRule(
   }
   if (!writes.length) return;
   try {
-    await setPrices(target.store, writes);
+    await adapterFor(target.store).setPrices(target.store, writes);
   } catch (e) {
     await fail(target.store, e, logs);
     return;
@@ -272,109 +274,41 @@ async function applyPriceRule(
   if (writes.length > 30) logs.push({ level: "info", storeLabel: target.store.label, message: `Fiyat kuralı ${writes.length - 30} SKU'da daha uygulandı.` });
 }
 
-const hostOf = (url: string | null | undefined) => {
-  if (!url) return null;
-  try {
-    return new URL(url).host.replace(/^www\./, "") || null;
-  } catch {
-    return null;
-  }
-};
-
 async function syncOrders(store: Store, logs: Log[]) {
   const startedAt = new Date();
   const since = store.lastOrderSyncAt
     ? new Date(store.lastOrderSyncAt.getTime() - 5 * 60_000)
     : new Date(Date.now() - 30 * 24 * 3600_000); // ilk senkron: son 30 gün
-  const { orders, rich } = await listOrders(store, since);
-  if (!rich && orders.length) logs.push({ level: "warn", storeLabel: store.label, message: "Sipariş kaynak/kampanya alanları ikas'tan okunamadı; raporlar bu siparişler için eksik kalır." });
+  const { orders, rich } = await adapterFor(store).listOrders(store, since);
+  if (!rich && orders.length) logs.push({ level: "warn", storeLabel: store.label, message: "Sipariş kaynak/kampanya alanları okunamadı; raporlar bu siparişler için eksik kalır." });
   for (const o of orders) {
-    const data = {
-      orderNumber: o.orderNumber ?? "-",
-      status: o.status,
-      paymentStatus: o.orderPaymentStatus,
-      packageStatus: o.orderPackageStatus,
-      currency: o.currencyCode,
-      totalFinalPrice: o.totalFinalPrice,
-      orderedAt: o.orderedAt ? new Date(o.orderedAt) : null,
-      shippingMethod: o.shippingMethod,
-      packages: JSON.stringify(
-        (o.orderPackages ?? []).map((p) => ({
-          id: p.id ?? null,
-          number: p.orderPackageNumber,
-          status: p.orderPackageFulfillStatus ?? null,
-          lineIds: p.orderLineItemIds ?? [],
-          barcode: p.trackingInfo?.barcode ?? null,
-          cargoCompany: p.trackingInfo?.cargoCompany ?? null,
-          trackingNumber: p.trackingInfo?.trackingNumber ?? null,
-          trackingLink: p.trackingInfo?.trackingLink ?? null,
-        })),
-      ),
-      ...(rich
-        ? {
-            salesChannel: o.salesChannel?.name ?? o.salesChannel?.type ?? null,
-            trafficSource: o.sessionInfo?.trafficSource?.source ?? o.sessionInfo?.trafficSource?.type ?? null,
-            referer: hostOf(o.sessionInfo?.referer),
-            utmSource: o.sessionInfo?.utm?.source ?? null,
-            utmMedium: o.sessionInfo?.utm?.medium ?? null,
-            utmCampaign: o.sessionInfo?.utm?.campaign ?? null,
-            city: o.shippingAddress?.city?.name ?? null,
-            district: o.shippingAddress?.district?.name ?? null,
-            couponCode: o.couponCode ?? null,
-            campaigns: JSON.stringify(
-              (o.orderAdjustments ?? []).filter((a) => a.type === "DECREMENT").map((a) => ({ name: a.name, type: a.campaignType, amount: a.amount })),
-            ),
-          }
-        : {}),
-    };
-    const lines = o.orderLineItems.map((l) => ({
-      sku: l.variant?.sku ?? "",
-      name: l.variant?.name ?? "",
-      quantity: l.quantity,
-      finalPrice: l.finalPrice,
-      imageId: l.variant?.mainImageId ?? null,
-      ikasLineId: l.id ?? null,
-      status: l.status ?? null,
-    }));
     await db.order.upsert({
-      where: { storeId_ikasOrderId: { storeId: store.id, ikasOrderId: o.id } },
-      create: { ...data, storeId: store.id, ikasOrderId: o.id, lines: { create: lines } },
-      update: { ...data, lines: { deleteMany: {}, create: lines } },
+      where: { storeId_ikasOrderId: { storeId: store.id, ikasOrderId: o.externalId } },
+      create: { ...o.data, storeId: store.id, ikasOrderId: o.externalId, lines: { create: o.lines } },
+      update: { ...o.data, lines: { deleteMany: {}, create: o.lines } },
     });
   }
   await db.store.update({ where: { id: store.id }, data: { lastOrderSyncAt: startedAt } });
 }
 
-/** Terk edilmiş sepetleri çeker. Hata olursa senkronun geri kalanını durdurmaz. */
+/** Terk edilmiş sepetleri çeker (platform destekliyorsa). Hata olursa senkronun geri kalanını durdurmaz. */
 async function syncCarts(store: Store, logs: Log[]) {
+  const adapter = adapterFor(store);
+  if (!adapter.listCarts) return;
   const startedAt = new Date();
   const since = store.lastCartSyncAt ? new Date(store.lastCartSyncAt.getTime() - 5 * 60_000) : new Date(Date.now() - 30 * 24 * 3600_000);
   let carts;
   try {
-    carts = await listAbandonedCheckouts(store, since);
+    carts = await adapter.listCarts(store, since);
   } catch (e) {
     logs.push({ level: "warn", storeLabel: store.label, message: `Terk edilmiş sepetler alınamadı: ${e instanceof Error ? e.message : e}` });
     return;
   }
   for (const c of carts) {
-    const data = {
-      status: c.status,
-      recoveryStatus: c.recoveryStatus,
-      emailStatus: c.recoverEmailStatus,
-      total: c.totalFinalPrice,
-      currency: c.cart?.currencyCode ?? "TRY",
-      itemCount: c.cart?.itemCount ?? c.cart?.items.reduce((a, i) => a + i.quantity, 0) ?? 0,
-      couponCode: c.couponCode,
-      city: c.shippingAddress?.city?.name ?? null,
-      lastActivityAt: c.cart?.lastActivityDate ? new Date(c.cart.lastActivityDate) : null,
-      linesJson: JSON.stringify(
-        (c.cart?.items ?? []).map((i) => ({ name: i.variant?.name ?? "", sku: i.variant?.sku ?? "", imageId: i.variant?.mainImageId ?? null, quantity: i.quantity, price: i.finalPrice })),
-      ),
-      seenAt: startedAt,
-    };
+    const data = { ...c.data, seenAt: startedAt };
     await db.abandonedCart.upsert({
-      where: { storeId_ikasId: { storeId: store.id, ikasId: c.id } },
-      create: { ...data, storeId: store.id, ikasId: c.id },
+      where: { storeId_ikasId: { storeId: store.id, ikasId: c.externalId } },
+      create: { ...data, storeId: store.id, ikasId: c.externalId },
       update: data,
     });
   }

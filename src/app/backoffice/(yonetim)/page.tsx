@@ -1,3 +1,4 @@
+import { storeHost } from "@/lib/platforms";
 import Link from "next/link";
 import { PLANS, planById, tl } from "@/lib/plans";
 import { fmtDate } from "../../(panel)/ui";
@@ -69,7 +70,7 @@ export default async function Page() {
           <div className="mt-3 divide-y divide-gray-100 border-t border-gray-100">
             {stores.filter((s) => s.lastError).slice(0, 6).map((s) => (
               <div key={s.id} className="py-2.5 text-sm">
-                <div className="font-medium">{s.label} <span className="font-normal text-gray-400">· {s.storeName}.myikas.com</span></div>
+                <div className="font-medium">{s.label} <span className="font-normal text-gray-400">· {storeHost(s)}</span></div>
                 <div className="truncate text-xs text-red-600" title={s.lastError ?? ""}>{s.lastError}</div>
                 <div className="text-xs text-gray-400">Son senkron: {fmtDate(s.lastSyncAt)}</div>
               </div>

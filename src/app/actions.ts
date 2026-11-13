@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 import { encrypt, randomToken } from "@/lib/crypto";
 import { invalidateUser } from "@/lib/cache";
 import { db } from "@/lib/db";
-import { TRIAL_DAYS, planById } from "@/lib/plans";
+import { TRIAL_DAYS, hasBiggerPlan, planById, storeLimitOf } from "@/lib/plans";
 import { fetchToken, normalizeStoreName, registerWebhooks } from "@/lib/ikas";
 import { createSession, destroySession, requireUser } from "@/lib/session";
 import { syncUser } from "@/lib/sync";
@@ -56,7 +56,12 @@ export async function addStore(fd: FormData) {
   const clientSecret = str(fd, "clientSecret");
   if (!label || !storeName || !clientId || !clientSecret) back("/magazalar", "hata", "Tüm alanları doldurun.");
   if (!/^[a-z0-9-]+$/.test(storeName)) back("/magazalar", "hata", "Mağaza adı geçersiz (örnek: magazam).");
-  if ((await db.store.count({ where: { userId: user.id } })) >= 2) back("/magazalar", "hata", "En fazla iki mağaza bağlanabilir.");
+  // Mağaza hakkı pakete göre; sayfadaki form gizlense de sınır burada uygulanır.
+  const limit = storeLimitOf(user.plan);
+  if ((await db.store.count({ where: { userId: user.id } })) >= limit)
+    back("/magazalar", "hata", hasBiggerPlan(user.plan)
+      ? `${planById(user.plan)?.name ?? "Mevcut"} paketinde en fazla ${limit} mağaza bağlanabilir. Daha fazla mağaza için lütfen paketinizi değiştirin.`
+      : `Paketinizin mağaza hakkı (${limit}) doldu. Daha fazla mağaza için destek ile iletişime geçin.`);
   if (await db.store.findUnique({ where: { userId_storeName: { userId: user.id, storeName } } }))
     back("/magazalar", "hata", "Bu mağaza zaten bağlı.");
 

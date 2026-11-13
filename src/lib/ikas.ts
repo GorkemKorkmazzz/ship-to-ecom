@@ -48,6 +48,8 @@ export async function fetchToken(storeName: string, clientId: string, clientSecr
 }
 
 async function getToken(store: Store): Promise<string> {
+  // Kampanya, ürün ekleme, sipariş durumu gibi ikas'a özel işlemler başka platformun mağazasına gitmesin.
+  if (store.platform !== "ikas") throw new IkasError("Bu işlem yalnızca ikas mağazalarında destekleniyor.");
   if (store.accessToken && store.tokenExpiresAt && store.tokenExpiresAt.getTime() - Date.now() > 5 * 60_000) {
     return store.accessToken;
   }

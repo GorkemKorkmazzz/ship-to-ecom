@@ -1,7 +1,8 @@
+import { storeHost } from "@/lib/platforms";
 import Link from "next/link";
 import { logout } from "@/app/actions";
 import { getStores } from "@/lib/cache";
-import { accountStatus, planById } from "@/lib/plans";
+import { accountStatus, planById, storeLimitOf } from "@/lib/plans";
 import { requireUser } from "@/lib/session";
 import { Logo } from "./logo";
 import { Nav } from "./nav";
@@ -29,19 +30,19 @@ export default async function PanelLayout({ children }: { children: React.ReactN
           <div className="mt-6 hidden lg:block">
             <div className="mb-1.5 flex items-center justify-between px-3 text-[11px] font-semibold uppercase tracking-widest text-gray-400">
               <span>Bağlı mağazalar</span>
-              <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-indigo-700">{stores.length}</span>
+              <span className="rounded-md bg-indigo-50 px-1.5 py-0.5 text-indigo-700">{stores.length}/{storeLimitOf(user.plan)}</span>
             </div>
             <div className="space-y-1">
               {stores.map((s, i) => (
                 <Link key={s.id} href={`/siparisler?magaza=${s.id}`} className="flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-gray-100">
-                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.lastError ? "#ef4444" : STORE_HEX[i % 2] }} />
+                  <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.lastError ? "#ef4444" : STORE_HEX[i % STORE_HEX.length] }} />
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium text-gray-800">{s.label}</span>
-                    <span className="block truncate text-xs text-gray-400">{s.storeName}.myikas.com</span>
+                    <span className="block truncate text-xs text-gray-400">{storeHost(s)}</span>
                   </span>
                 </Link>
               ))}
-              {stores.length < 2 && <Link href="/magazalar" className="block rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">+ Mağaza bağla</Link>}
+              {stores.length < storeLimitOf(user.plan) && <Link href="/magazalar" className="block rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">+ Mağaza bağla</Link>}
             </div>
           </div>
         </div>

@@ -30,6 +30,7 @@ const GROUPS = [
     title: "Ayarlar",
     items: [
       { href: "/magazalar", label: "Mağazalar", d: "M4 9l1-5h14l1 5M4 9v11h16V9M4 9h16M10 20v-6h4v6" },
+      { href: "/entegrasyonlar", label: "Entegrasyonlar", d: "M9 3v5M15 3v5M6 8h12v4a6 6 0 01-12 0V8zM12 18v3" },
       { href: "/lisans", label: "Lisans", d: "M3 7h18v10H3zM3 11h18M7 15h4" },
       { href: "/kayitlar", label: "Kayıtlar", d: "M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01" },
     ],

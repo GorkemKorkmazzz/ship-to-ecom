@@ -4,7 +4,8 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { csvNum, parseCsv } from "@/lib/csv";
 import { db } from "@/lib/db";
-import { setPrices, type PriceWrite } from "@/lib/ikas";
+import { adapterFor } from "@/lib/platforms";
+import type { PriceWrite } from "@/lib/platforms/types";
 import { copyProduct, createInStore, validateDraft } from "@/lib/product";
 import { requireUser } from "@/lib/session";
 import { syncUser } from "@/lib/sync";
@@ -62,7 +63,7 @@ export async function savePrices(fd: FormData) {
     if (discountPrice !== null && discountPrice >= sellPrice) { errors.push(`${store.label}: indirimli fiyat satış fiyatından düşük olmalı`); continue; }
     if (sellPrice === row.sellPrice && discountPrice === row.discountPrice && buyPrice === row.buyPrice) continue;
     try {
-      await setPrices(store, [{ productId: row.productId, variantId: row.variantId, sellPrice, discountPrice, buyPrice }]);
+      await adapterFor(store).setPrices(store, [{ productId: row.productId, variantId: row.variantId, sellPrice, discountPrice, buyPrice }]);
       await db.storeVariant.update({ where: { id: row.id }, data: { sellPrice, discountPrice, buyPrice } });
       changed++;
     } catch (e) {
@@ -139,7 +140,7 @@ export async function bulkUpdate(fd: FormData) {
   for (const [storeId, list] of priceWrites) {
     const store = stores.find((s) => s.id === storeId)!;
     try {
-      await setPrices(store, list);
+      await adapterFor(store).setPrices(store, list);
       const ops = list.map((w) => db.storeVariant.update({ where: { id: w.rowId }, data: { sellPrice: w.sellPrice, discountPrice: w.discountPrice, buyPrice: w.buyPrice } }));
       for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
       priceCount += list.length;

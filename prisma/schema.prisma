@@ -46,9 +46,11 @@ model Store {
   userId          String
   user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   label           String // panelde görünen ad
-  storeName       String // <storeName>.myikas.com
-  clientId        String
-  clientSecretEnc String // AES-256-GCM ile şifreli
+  platform        String         @default("ikas") // ikas | tsoft
+  storeName       String // ikas: <storeName>.myikas.com · tsoft: mağaza alan adı
+  externalId      String? // tsoft: store_id (ikas'ta boş)
+  clientId        String // ikas: mağazaya özel · tsoft: boş (uygulama anahtarı ortam değişkeninde)
+  clientSecretEnc String // AES-256-GCM ile şifreli (tsoft'ta boş)
   accessToken     String?
   tokenExpiresAt  DateTime?
   stockLocationId String?

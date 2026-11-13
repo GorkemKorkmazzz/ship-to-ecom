@@ -4,8 +4,53 @@
     {
       "name": "ikiz",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "port": 3000
+    },
+    {
+      "name": "sahte-ikas",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/mock-ikas.mjs"
+      ],
+      "port": 4010
+    },
+    {
+      "name": "sahte-tsoft",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/mock-tsoft.mjs"
+      ],
+      "port": 4020
+    },
+    {
+      "name": "test",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "DATABASE_URL=file:./test.db",
+        "APP_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "CRON_SECRET=test",
+        "APP_URL=http://localhost:3100",
+        "NEXT_DIST_DIR=.next-test",
+        "IKAS_GRAPHQL_URL=http://localhost:4010/graphql",
+        "IKAS_TOKEN_URL=http://localhost:4010/{store}/token",
+        "IKAS_IMAGE_URL=http://localhost:4010/image",
+        "TSOFT_CLIENT_ID=app.test",
+        "TSOFT_CLIENT_SECRET=gizli",
+        "TSOFT_API_URL=http://localhost:4020/{domain}/api/v3/admin/2026-01",
+        "TSOFT_TOKEN_URL=http://localhost:4020/oauth/token",
+        "TSOFT_INSTALL_URL=http://localhost:4020/install",
+        "TSOFT_PANEL_URL=http://localhost:4020/panel",
+        "npx",
+        "next",
+        "dev",
+        "-p",
+        "3100"
+      ],
+      "port": 3100
     }
   ]
 }

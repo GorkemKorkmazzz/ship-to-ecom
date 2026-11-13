@@ -1,3 +1,4 @@
+import { storeHost } from "@/lib/platforms";
 import { planById } from "@/lib/plans";
 import { fmtDate } from "../../../(panel)/ui";
 import { STATUS, loadAccounts } from "../data";
@@ -36,7 +37,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ q
               <tr key={s.id}>
                 <td className="td">
                   <div className="font-medium">{s.label}</div>
-                  <div className="text-xs text-gray-400">{s.storeName}.myikas.com</div>
+                  <div className="text-xs text-gray-400">{storeHost(s)}</div>
                 </td>
                 <td className="td">{u.email}</td>
                 <td className="td whitespace-nowrap">
