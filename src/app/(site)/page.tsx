@@ -10,8 +10,27 @@ const INTEGRATIONS: [string, string, string][] = [
   ["ikas", "Mağaza", "text-gray-900"], ["Meta Ads", "Reklam", "text-blue-600"], ["Google Ads", "Reklam", "text-amber-600"], ["Google Analytics 4", "Analitik", "text-orange-500"],
 ];
 
+// Vitrin modülleri: ikas mağazasının temasında çalışır (panelde "Vitrin modülleri"). Metinler gerçek davranışı anlatır.
+const SHOWCASE: { name: string; text: string; icon: string; tag: string }[] = [
+  { name: "Kampanya Barı", tag: "Tüm sayfalar", icon: "M3 11v2a1 1 0 001 1h2l5 4V6L6 10H4a1 1 0 00-1 1zM15 9a3 3 0 010 6M18 6a7 7 0 010 12", text: "Sitenin üstünde ya da altında kampanya duyurusu. Tarih, sayfa ve cihaz hedefleme, buton, kayan yazı ve geçiş ölçümü." },
+  { name: "Bilgi Şeridi", tag: "Ürün sayfası", icon: "M4 6h16M4 10h10M4 14h16M4 18h10", text: "Ürün adı, fiyat ya da Sepete Ekle çevresinde kargo, iade, taksit mesajları ve tek tıkla kopyalanan indirim kodu." },
+  { name: "Çok Al Az Öde", tag: "ikas kampanyası", icon: "M12 3l2.8 5.7 6.2.9-4.5 4.4 1 6.2L12 17.3 6.5 20.2l1-6.2L3 9.6l6.2-.9L12 3z", text: "Adet arttıkça artan indirim ikas'ta kademeli kampanya olarak kurulur; ürün sayfasında kademeler, sepette ulaşılan kademe görünür." },
+  { name: "Tükenmek Üzere", tag: "Gerçek stok", icon: "M12 3a9 9 0 100 18 9 9 0 000-18zM12 7v5l3 2", text: "Seçili varyantın ikas stoğu eşiğin altına inince uyarı ve ilerleme çubuğu. Varyant ya da stok değişince kendiliğinden güncellenir." },
+  { name: "Hediye Çarkı", tag: "Kişiye özel kupon", icon: "M4 11h16v9H4zM3 7h18v4H3zM12 7v13M12 7c-2.5-4-7-2.5-5 0M12 7c2.5-4 7-2.5 5 0", text: "Ödül sunucuda belirlenen olasılıkla seçilir; kazanana ikas'ta benzersiz kupon üretilir. Tekrar katılım kontrolü, KVKK'ya uygun veri saklama." },
+  { name: "Flash Ürünler", tag: "ikas kampanyası", icon: "M13 3L4 14h7l-1 7 9-11h-7l1-7z", text: "Süreli indirimli ürünleri ana sayfada ya da seçtiğiniz sayfada gerçek bitiş zamanına bağlı geri sayımla listeler." },
+  { name: "Fiyat Altı İndirimi", tag: "Ürün / varyant", icon: "M3 12V4a1 1 0 011-1h8l9 9-9 9-9-9zM7.5 7.5h.01", text: "Fiyatın altında ürüne ya da varyanta özel indirim: eski ve yeni fiyat, kazanç tutarı ve isteğe bağlı geri sayım." },
+  { name: "Ürün Etiketleri", tag: "Otomatik kurallar", icon: "M4 4h9l7 7-9 9-7-7V4zM8 8h.01", text: "Yeni, Çok Satan, İndirimde, Tükendi, Sınırlı Stok etiketleri; gerçek fiyat, stok, ürün tarihi ve satışa göre kendiliğinden eklenir ve kalkar." },
+  { name: "Duyuru Çubuğu", tag: "Tüm sayfalar", icon: "M6 9a6 6 0 1112 0c0 6 2.5 7.5 2.5 7.5h-17S6 15 6 9zM10 20a2 2 0 004 0", text: "Sayfanın üstünde ya da altında kısa bir duyuru ve isteğe bağlı bağlantı." },
+];
+const SHOWCASE_POINTS = [
+  ["Mağaza bazında yönetim", "Her modülü her mağazada ayrı açın, ayrı ayarlayın."],
+  ["Canlı önizleme", "Masaüstü ve mobil görünümü yayınlamadan önce görün; taslağı mağazada gizli bağlantıyla deneyin."],
+  ["Gerçek istatistik", "Görüntülenme, tıklanma ve ikas siparişlerinden kampanya kaynaklı satış."],
+  ["Temayı bozmadan", "Modüller temadan bağımsız bir katmanda çizilir; kurulum tek satır kod."],
+];
+
 const STEPS = [
-  ["E-ticaret sitenizi bağlayın", "Kullandığınız altyapıyı seçin ve mağazalarınızı panele bağlayın. Birkaç dakika sürer."],
+  ["ikas mağazanızı bağlayın", "ikas mağazalarınızı API bilgileriyle panele bağlayın. Birkaç dakika sürer."],
   ["Ürünler otomatik eşleşsin", "Aynı SKU'ya sahip ürünler kendiliğinden eşleşir; farklı olanları tek tıkla eşleştirirsiniz."],
   ["Tek panelden yönetin", "Stok, fiyat, sipariş ve kampanyaları tek yerden takip edin; gerisini ShipToEcom halleder."],
 ];
@@ -20,6 +39,8 @@ const FAQ = [
   ["Müşteri bilgilerimi alıyor musunuz?", "Hayır. ShipToEcom müşteri adı, e-posta, telefon ve adres bilgilerini mağazanızdan hiç istemez ve saklamaz. Yalnızca ürün, stok ve sipariş kalemleriyle çalışır."],
   ["Mağazalarımdaki SKU'lar farklıysa ne olur?", "SKU eşleştirme ekranı aynı barkod veya aynı ada sahip ürünleri önerir; siz onaylarsınız. Mağazalarınızdaki SKU'lar değişmez."],
   ["Deneme süresi bitince ne olur?", `${TRIAL_DAYS} günlük deneme boyunca tüm özellikleri kullanırsınız. Süre sonunda bir paket seçmezseniz mağazalarınıza dokunulmaz; yalnızca senkron durur.`],
+  ["Vitrin modülleri mağazama nasıl eklenir?", "Panelden mağazanız için bir vitrin anahtarı oluşturur, size verilen tek satırlık kodu ikas temanızın özel kod alanına bir kez eklersiniz. Sonrasında modülleri panelden açıp kapatır ve düzenlersiniz; temanıza tekrar dokunmanız gerekmez."],
+  ["Vitrindeki indirimler gerçekten uygulanıyor mu?", "Evet. Çok Al Az Öde, Flash Ürünler, Fiyat Altı İndirimi ve Hediye Çarkı ödülleri ikas'ta gerçek kampanya ya da kupon olarak oluşturulur; indirimi ikas uygular. Modülü kapattığınızda ilgili kampanya da kalkar (verilmiş çark kuponları geçerli kalır)."],
   ["Reklam hesaplarımı bağlayabilir miyim?", "Kurumsal pakette Meta Ads, Google Ads (yönetici hesap altındakiler dahil) ve Google Analytics 4 hesaplarınızı salt okuma izniyle bağlayıp verileri web sitelerinize göre raporlayabilirsiniz."],
   ["İstediğim zaman iptal edebilir miyim?", "Evet. Aylık pakette dilediğiniz zaman iptal edebilirsiniz; mağazalarınız olduğu gibi çalışmaya devam eder."],
 ];
@@ -34,6 +55,7 @@ export default async function Page() {
           <nav className="hidden flex-1 gap-6 text-sm font-medium text-gray-600 md:flex">
             <a href="#ne-yapiyoruz" className="hover:text-gray-900">Ne yapıyoruz</a>
             <a href="#ozellikler" className="hover:text-gray-900">Modüller</a>
+            <a href="#vitrin" className="hover:text-gray-900">Vitrin modülleri</a>
             <a href="#paketler" className="hover:text-gray-900">Paketler</a>
             <a href="#sss" className="hover:text-gray-900">SSS</a>
           </nav>
@@ -57,7 +79,7 @@ export default async function Page() {
             E-ticaret mağazalarınız, <span className="text-indigo-600">tek stok</span> ve tek panel
           </h1>
           <p className="mx-auto mt-5 max-w-2xl text-lg text-gray-600">
-            ShipToEcom e-ticaret mağazalarınızı birbirine bağlar: stoklar otomatik eşitlenir, siparişler tek ekranda toplanır, fiyat ve kampanyalar tek yerden yönetilir. Kurumsal pakette Meta, Google Ads ve GA4 verileriniz de aynı panelde.
+            ShipToEcom e-ticaret mağazalarınızı birbirine bağlar: stoklar otomatik eşitlenir, siparişler tek ekranda toplanır, fiyat ve kampanyalar tek yerden yönetilir. Vitrin modülleriyle kampanya barı, hediye çarkı, flash ürünler ve ürün etiketlerini ikas temanıza ekleyin; kurumsal pakette Meta, Google Ads ve GA4 verileriniz de aynı panelde.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Link href="/kayit" className="rounded-lg bg-indigo-600 px-6 py-3 text-sm font-semibold text-white hover:bg-indigo-700">{TRIAL_DAYS} gün ücretsiz dene</Link>
@@ -128,6 +150,41 @@ export default async function Page() {
             );
           })}
         </div>
+      </section>
+
+      <section id="vitrin" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-16">
+        <div className="text-center">
+          <span className="rounded-full bg-indigo-600 px-3 py-1 text-xs font-semibold text-white">{PLANS.find((p) => p.id === MODULES.find((m) => m.id === "vitrin")?.plan)?.name} paketinden itibaren</span>
+          <h2 className="mt-4 text-3xl font-bold tracking-tight">Vitrin modülleri</h2>
+          <p className="mx-auto mt-3 max-w-2xl text-gray-600">ikas mağazanızın temasında çalışan, satışı artırmaya yönelik {SHOWCASE.length} modül. İndirim içeren modüller ikas&apos;ta gerçek kampanya ya da kupon oluşturur.</p>
+        </div>
+        <div className="mt-10 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          {SHOWCASE.map((m) => (
+            <div key={m.name} className="flex gap-4 rounded-2xl border border-gray-200 bg-white p-5 transition hover:-translate-y-0.5 hover:shadow-md">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-indigo-50 text-indigo-600">
+                <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d={m.icon} /></svg>
+              </span>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="font-semibold">{m.name}</h3>
+                  <span className="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">{m.tag}</span>
+                </div>
+                <p className="mt-1.5 text-sm text-gray-600">{m.text}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+        <ul className="mt-10 grid gap-4 rounded-2xl bg-indigo-50 p-6 sm:grid-cols-2 lg:grid-cols-4">
+          {SHOWCASE_POINTS.map(([t, d]) => (
+            <li key={t}>
+              <p className="flex items-center gap-2 font-semibold text-indigo-900">
+                <svg viewBox="0 0 24 24" className="h-4 w-4 text-indigo-600" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M5 12l5 5L20 7" /></svg>
+                {t}
+              </p>
+              <p className="mt-1 text-sm text-indigo-900/70">{d}</p>
+            </li>
+          ))}
+        </ul>
       </section>
 
       <section id="paketler" className="mx-auto max-w-6xl scroll-mt-20 px-4 py-16">
