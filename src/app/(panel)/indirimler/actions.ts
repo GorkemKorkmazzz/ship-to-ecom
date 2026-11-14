@@ -1,5 +1,6 @@
 "use server";
 
+import { assertModule } from "@/lib/access";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { invalidateCampaigns } from "@/lib/cache";
@@ -14,6 +15,7 @@ const ts = (v: string) => (v ? new Date(`${v}:00+03:00`).getTime() : null);
 
 export async function createCampaign(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "kampanya");
   const title = str(fd, "title");
   const type = str(fd, "type");
   const amount = Number(str(fd, "amount").replace(",", "."));
@@ -73,6 +75,7 @@ export async function createCampaign(fd: FormData) {
 
 export async function removeCampaign(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "kampanya");
   let targets: { storeId: string; id: string }[] = [];
   try {
     targets = JSON.parse(str(fd, "targets"));

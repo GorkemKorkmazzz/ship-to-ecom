@@ -100,7 +100,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ g
 
       {orders.length > 0 && withReport === 0 && (
         <p className="mb-4 rounded-lg bg-amber-50 px-4 py-2.5 text-sm text-amber-800">
-          Bu dönemdeki siparişlerde kanal, kaynak ve il bilgisi yok. Bu alanlar yeni senkronla gelir; eski siparişler ikas&apos;ta güncellendikçe dolar.
+          Bu dönemdeki siparişlerde kanal, kaynak ve il bilgisi yok. Bu alanlar yeni senkronla gelir; eski siparişler mağazada güncellendikçe dolar.
         </p>
       )}
 
@@ -115,7 +115,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ g
 
       <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-widest text-gray-400">Siparişler nereden geliyor</h2>
       <div className="grid gap-5 lg:grid-cols-2">
-        <Breakdown title="Satış kanalı" hint="Siparişin oluştuğu ikas satış kanalı" rows={group(orders, (o) => o.salesChannel, amt)} unit="sipariş" money={money} />
+        <Breakdown title="Satış kanalı" hint="Siparişin oluştuğu satış kanalı" rows={group(orders, (o) => o.salesChannel, amt)} unit="sipariş" money={money} />
         <Breakdown title="Trafik kaynağı" hint="Ziyaretin geldiği kaynak (doğrudan, arama, sosyal medya…)" rows={group(orders, (o) => o.trafficSource, amt)} unit="sipariş" money={money} />
         <Breakdown title="Yönlendiren site" hint="Müşteriyi mağazaya getiren alan adı" rows={group(orders, (o) => o.referer, amt, "Doğrudan / bilinmiyor")} unit="sipariş" money={money} />
         <Breakdown title="Mağaza" rows={group(orders, (o) => storeLabel(o.storeId), amt)} unit="sipariş" money={money} />

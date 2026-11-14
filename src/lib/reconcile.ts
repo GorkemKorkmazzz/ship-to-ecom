@@ -29,3 +29,23 @@ export function publish(shared: number, safetyStock: number, sharePercent: numbe
   const pct = Math.min(100, Math.max(0, sharePercent));
   return Math.max(0, Math.floor((available * pct) / 100 + 1e-9));
 }
+
+export type AllocStore = { sharePercent: number; minStock: number; priority: boolean };
+
+/**
+ * Akıllı dağıtım: her mağazaya yazılacak stok.
+ * - Normal: mağaza payı (publish), stok yetiyorsa en az minStock.
+ * - Kritik: satılabilir stok (ortak − güvenlik) criticalStock ve altındaysa ve öncelikli mağaza
+ *   seçiliyse, stok yalnızca öncelikli mağazada satışa açılır; diğerlerine 0 yazılır.
+ *   Böylece son adetler iki mağazada aynı anda satılamaz.
+ * Ayarlar kapalıyken (minStock 0, criticalStock null) sonuç publish() ile birebir aynıdır.
+ */
+export function allocate(shared: number, safetyStock: number, stores: AllocStore[], criticalStock: number | null): { targets: number[]; critical: boolean } {
+  const available = Math.max(0, Math.floor(shared - Math.max(0, safetyStock) + 1e-9));
+  const critical = criticalStock !== null && available <= criticalStock && stores.some((s) => s.priority);
+  if (critical) return { critical, targets: stores.map((s) => (s.priority ? available : 0)) };
+  return {
+    critical,
+    targets: stores.map((s) => Math.max(publish(shared, safetyStock, s.sharePercent), Math.min(Math.max(0, Math.floor(s.minStock)), available))),
+  };
+}

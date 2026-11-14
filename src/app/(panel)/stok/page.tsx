@@ -1,3 +1,4 @@
+import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { saveStockSettings } from "@/app/actions";
 import { getStores } from "@/lib/cache";
@@ -7,6 +8,7 @@ import { Flash, PageHeader, StoreBadge, SyncButton } from "../ui";
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string; q?: string; f?: string }> }) {
   const user = await requireUser();
+  const smart = hasModule(user, "dagitim");
   const sp = await searchParams;
   const q = (sp.q ?? "").trim().toLowerCase();
   const stores = await getStores(user.id);
@@ -51,8 +53,8 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
       </PageHeader>
       <Flash ok={sp.ok} hata={sp.hata} />
 
-      <details className="card mb-5" open={user.safetyStock > 0 || user.lowStockThreshold !== null || stores.some((s) => s.stockSharePercent !== 100) ? undefined : false}>
-        <summary className="cursor-pointer font-semibold">Stok ayarları</summary>
+      <details className="card mb-5" open={user.safetyStock > 0 || user.lowStockThreshold !== null || user.criticalStock !== null || stores.some((s) => s.stockSharePercent !== 100 || s.minStock > 0)}>
+        <summary className="cursor-pointer font-semibold">Stok ayarları ve akıllı dağıtım</summary>
         <form action={saveStockSettings} className="mt-4">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <label className="block">
@@ -65,12 +67,44 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
               <input className="input" name="lowStockThreshold" inputMode="numeric" defaultValue={user.lowStockThreshold ?? ""} placeholder="Kapalı" />
               <span className="mt-1 block text-xs text-gray-500">Ortak stok bu değere inince uyarı verilir. Boş bırakılırsa kapalı.</span>
             </label>
-            {stores.map((s) => (
-              <label key={s.id} className="block">
-                <span className="label">{s.label} payı (%)</span>
-                <input className="input" name={`share_${s.id}`} inputMode="numeric" defaultValue={s.stockSharePercent} />
-                <span className="mt-1 block text-xs text-gray-500">Ortak stoğun bu mağazada görünen kısmı. 100 = tamamı.</span>
-              </label>
+            {smart && (
+              <>
+            <label className="block">
+              <span className="label">Kritik stok seviyesi (adet)</span>
+              <input className="input" name="criticalStock" inputMode="numeric" defaultValue={user.criticalStock ?? ""} placeholder="Kapalı" />
+              <span className="mt-1 block text-xs text-gray-500">Satılabilir stok bu değere inince ürün yalnızca öncelikli mağazada satışa açık kalır; aynı son adet iki mağazada satılamaz.</span>
+            </label>
+            <label className="block">
+              <span className="label">Öncelikli mağaza</span>
+              <select className="input" name="priorityStoreId" defaultValue={user.priorityStoreId ?? ""}>
+                <option value="">Seçilmedi</option>
+                {stores.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </select>
+              <span className="mt-1 block text-xs text-gray-500">Kritik stokta satışa devam eden mağaza.</span>
+            </label>
+              </>
+            )}
+          </div>
+          {!smart && <p className="mt-4 rounded-lg bg-indigo-50 px-3 py-2 text-sm text-indigo-800">Mağaza başına minimum stok, öncelikli mağaza ve kritik stok modu Profesyonel paketinde. <Link href="/lisans" className="font-medium underline">Paketi yükselt</Link></p>}
+          <h3 className="mt-6 text-sm font-semibold text-gray-700">Mağaza bazlı dağıtım</h3>
+          <div className="mt-2 grid gap-3 md:grid-cols-2">
+            {stores.map((s, i) => (
+              <fieldset key={s.id} className="rounded-lg border border-gray-200 p-3">
+                <legend className="px-1"><StoreBadge label={s.label} index={i} />{user.priorityStoreId === s.id && <span className="badge ml-1 bg-indigo-100 text-indigo-700">Öncelikli</span>}</legend>
+                <div className="grid grid-cols-2 gap-3">
+                  <label className="block">
+                    <span className="label">Pay (%)</span>
+                    <input className="input" name={`share_${s.id}`} inputMode="numeric" defaultValue={s.stockSharePercent} />
+                  </label>
+                  {smart && (
+                    <label className="block">
+                      <span className="label">Minimum stok</span>
+                      <input className="input" name={`min_${s.id}`} inputMode="numeric" defaultValue={s.minStock} />
+                    </label>
+                  )}
+                </div>
+                <span className="mt-1 block text-xs text-gray-500">Pay: ortak stoğun bu mağazada görünen kısmı. Minimum: stok yetiyorsa bu mağazaya en az bu kadar yazılır.</span>
+              </fieldset>
             ))}
           </div>
           <button className="btn mt-4">Kaydet ve uygula</button>

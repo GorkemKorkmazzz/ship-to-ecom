@@ -33,7 +33,7 @@ export function BulkBar({ trash, total }: { trash: boolean; total: number }) {
       <button
         disabled={!count}
         onClick={(e) => {
-          if (!trash && !confirm(`${count} sipariş panelden silinsin mi? ikas'taki siparişler etkilenmez.`)) e.preventDefault();
+          if (!trash && !confirm(`${count} sipariş panelden silinsin mi? Mağazadaki siparişler etkilenmez.`)) e.preventDefault();
         }}
         className={`ml-auto cursor-pointer rounded-lg px-3 py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-40 ${trash ? "border border-gray-300 bg-white text-gray-700 hover:bg-gray-50" : "bg-red-600 text-white hover:bg-red-700"}`}
       >

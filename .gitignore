@@ -42,3 +42,6 @@ next-env.d.ts
 !.env.example
 /prisma/*.db*
 .next-test
+
+# Expo yerel durum (cihaz bilgisi)
+/.expo/

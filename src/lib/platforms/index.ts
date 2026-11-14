@@ -1,9 +1,8 @@
 import type { Store } from "@prisma/client";
 import { ikasAdapter } from "./ikas";
-import { tsoftAdapter } from "./tsoft";
 import type { PlatformAdapter, PlatformId } from "./types";
 
-const ADAPTERS: Record<PlatformId, PlatformAdapter> = { ikas: ikasAdapter, tsoft: tsoftAdapter };
+const ADAPTERS: Record<PlatformId, PlatformAdapter> = { ikas: ikasAdapter };
 
 /** Mağazanın platform adaptörü. Bilinmeyen platform hata verir (yanlış API'ye istek gitmesin). */
 export function adapterFor(store: Pick<Store, "platform">): PlatformAdapter {

@@ -34,7 +34,15 @@ model User {
   // Stok ayarları
   safetyStock       Float  @default(0) // mağazalara yazılmayan tampon adet
   lowStockThreshold Float? // null = uyarı kapalı
+  // Akıllı dağıtım: satılabilir stok bu değere ve altına inince yalnızca öncelikli mağazada satışa açılır.
+  criticalStock     Float? // null = kapalı
+  priorityStoreId   String? // kritik stokta satışa açık kalan mağaza
+  notifications     Notification[]
+  automationRules   AutomationRule[]
+  websites          Website[]
+  adIntegrations    AdIntegration[]
   skuSettings    SkuSetting[]
+  definitions    Definition[]
   stockMovements StockMovement[]
   stores       Store[]
   sharedItems  SharedItem[]
@@ -46,11 +54,11 @@ model Store {
   userId          String
   user            User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   label           String // panelde görünen ad
-  platform        String         @default("ikas") // ikas | tsoft
-  storeName       String // ikas: <storeName>.myikas.com · tsoft: mağaza alan adı
-  externalId      String? // tsoft: store_id (ikas'ta boş)
-  clientId        String // ikas: mağazaya özel · tsoft: boş (uygulama anahtarı ortam değişkeninde)
-  clientSecretEnc String // AES-256-GCM ile şifreli (tsoft'ta boş)
+  platform        String         @default("ikas") // yalnızca "ikas" desteklenir
+  storeName       String // <storeName>.myikas.com
+  externalId      String? // kullanılmıyor (eski kayıtlarla uyum için tutuluyor)
+  clientId        String
+  clientSecretEnc String // AES-256-GCM ile şifreli
   accessToken     String?
   tokenExpiresAt  DateTime?
   stockLocationId String?
@@ -67,11 +75,18 @@ model Store {
   priceFixed      Float          @default(0)
   priceRound      String         @default("none") // none | 1 | 0.90 | 0.99
   stockSharePercent Float        @default(100) // ortak stoğun bu mağazada görünen payı
+  minStock        Float          @default(0) // stok varsa bu mağazaya en az bu kadar yazılır (kritik mod hariç)
   createdAt       DateTime       @default(now())
   variants        StoreVariant[]
   aliases         SkuAlias[]
   orders          Order[]
+  website         Website?
   carts           AbandonedCart[]
+  sfKey           String?        @unique // vitrin betiğinin herkese açık anahtarı (gizli değildir, yenilenebilir)
+  sfModules       StoreModule[]
+  sfStats         ModuleStat[]
+  wheelEntries    WheelEntry[]
+  productMetas    ProductMeta[]
 
   @@unique([userId, storeName])
 }
@@ -139,8 +154,26 @@ model SkuSetting {
   excluded          Boolean @default(false) // ortak stok senkronu dışında
   safetyStock       Float? // null = genel ayar
   lowStockThreshold Float? // null = genel ayar
+  // Tanımlamalar (Definition) içinden atananlar; ad olarak saklanır.
+  category          String?
+  brand             String?
+  fields            String  @default("{}") // özel alan değerleri: { "alan adı": "değer" }
 
   @@unique([userId, sku])
+  @@index([userId, category])
+  @@index([userId, brand])
+}
+
+// Tanımlamalar: kullanıcının kendi kategori, marka ve özel alan adları (platformdan bağımsız).
+model Definition {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // category | brand | field
+  name      String
+  createdAt DateTime @default(now())
+
+  @@unique([userId, kind, name])
 }
 
 // Ortak stok hareketleri
@@ -223,6 +256,7 @@ model Order {
   district        String?
   couponCode      String?
   campaigns       String      @default("[]") // [{ name, type, amount }]
+  tags            String      @default("[]") // otomasyonun eklediği etiketler
   // Panelden silindi (ikas'ta durur). Senkron tekrar getirse de gizli kalır.
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
@@ -278,4 +312,266 @@ model SyncLog {
   message   String
 
   @@index([userId, createdAt])
+}
+
+// Panel bildirimleri (kritik stok, otomasyon). Okununca readAt dolar.
+model Notification {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String // stock | automation
+  title     String
+  body      String
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt, createdAt])
+}
+
+// Sipariş otomasyonu: koşullar (VE) sağlanınca aksiyonlar çalışır.
+model AutomationRule {
+  id         String          @id @default(cuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  active     Boolean         @default(true)
+  conditions String          @default("[]") // [{ field, op, value }]
+  actions    String          @default("[]") // [{ type, value }]
+  runCount   Int             @default(0)
+  lastRunAt  DateTime?
+  createdAt  DateTime        @default(now())
+  runs       AutomationRun[]
+
+  @@index([userId, active])
+}
+
+// Bir kural bir siparişte yalnızca bir kez çalışır (tekrarlı webhook/senkron güvenliği).
+model AutomationRun {
+  id        String         @id @default(cuid())
+  ruleId    String
+  rule      AutomationRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  orderId   String
+  createdAt DateTime       @default(now())
+
+  @@unique([ruleId, orderId])
+}
+
+// ───────────── Reklam analizi ─────────────
+// Kullanıcının web sitesi. Bir siteye en fazla bir ikas mağazası bağlanır; bir mağaza tek siteye aittir.
+model Website {
+  id         String             @id @default(cuid())
+  userId     String
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  domain     String // küçük harf, protokolsüz, www'suz (ör. magazam.com)
+  storeId    String?            @unique
+  store      Store?             @relation(fields: [storeId], references: [id], onDelete: SetNull)
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+  adAccounts WebsiteAdAccount[]
+  analytics  AnalyticsProperty?
+
+  @@unique([userId, domain])
+}
+
+// Bir reklam platformu bağlantısı (OAuth). Token'lar AES-256-GCM ile şifreli saklanır.
+model AdIntegration {
+  id              String      @id @default(cuid())
+  userId          String
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        String // meta | google | ga4
+  externalUserId  String // platformdaki kullanıcı/yetkilendiren kimliği
+  displayName     String?
+  accessTokenEnc  String
+  refreshTokenEnc String?
+  tokenExpiresAt  DateTime?
+  scopes          String      @default("")
+  status          String      @default("active") // active | expired | revoked | error
+  lastError       String?
+  lastSyncAt      DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  accounts        AdAccount[]
+  properties      AnalyticsProperty[]
+
+  @@unique([userId, provider, externalUserId])
+}
+
+// Bağlantı üzerinden erişilen reklam hesabı (Meta act_..., Google müşteri kimliği).
+model AdAccount {
+  id            String             @id @default(cuid())
+  integrationId String
+  integration   AdIntegration      @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  provider      String // meta | google (sorgu kolaylığı için tekrarlanır)
+  externalId    String
+  name          String
+  currency      String?
+  timezone      String?
+  managerId     String? // Google MCC altındaysa yönetici hesap kimliği
+  remoteStatus  Int? // platformdaki hesap durumu (Meta account_status)
+  metricsSyncedAt DateTime? // reklam verisinin son çekildiği an (gereksiz API çağrısını önlemek için)
+  metricsError  String?
+  campaigns     AdCampaign[]
+  metrics       AdDailyMetric[]
+  selected      Boolean            @default(false) // kullanıcı raporlamaya dahil etti mi
+  createdAt     DateTime           @default(now())
+  websites      WebsiteAdAccount[]
+
+  @@unique([integrationId, externalId])
+}
+
+// Site ↔ reklam hesabı (çoka çok). İkisi de aynı kullanıcıya ait olmalı; uygulama katmanında denetlenir.
+model WebsiteAdAccount {
+  websiteId   String
+  website     Website   @relation(fields: [websiteId], references: [id], onDelete: Cascade)
+  adAccountId String
+  adAccount   AdAccount @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@id([websiteId, adAccountId])
+}
+
+// Reklam kampanyası (Meta campaign / Google campaign).
+model AdCampaign {
+  id          String          @id @default(cuid())
+  adAccountId String
+  adAccount   AdAccount       @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  externalId  String
+  name        String
+  status      String? // Meta effective_status
+  objective   String?
+  updatedAt   DateTime        @updatedAt
+  metrics     AdDailyMetric[]
+
+  @@unique([adAccountId, externalId])
+}
+
+// Kampanya başına günlük ham metrikler. Oranlar (CPC, CPM, CTR, ROAS) saklanmaz; toplamlardan hesaplanır.
+// Tarih, reklam hesabının saat dilimindeki gündür (Meta verisi hesabın saat diliminde raporlanır).
+model AdDailyMetric {
+  id            String     @id @default(cuid())
+  adAccountId   String
+  adAccount     AdAccount  @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  campaignId    String
+  campaign      AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  date          String // YYYY-MM-DD
+  currency      String?
+  spend         Float      @default(0)
+  impressions   Int        @default(0)
+  reach         Int        @default(0) // günlük erişim; günler arasında toplanamaz
+  clicks        Int        @default(0)
+  purchases     Float      @default(0) // platformun raporladığı satın alma
+  purchaseValue Float      @default(0) // platformun raporladığı dönüşüm değeri
+  updatedAt     DateTime   @updatedAt
+
+  @@unique([campaignId, date])
+  @@index([adAccountId, date])
+}
+
+// Google Analytics 4 mülkü. Bir siteye en fazla bir mülk bağlanır.
+model AnalyticsProperty {
+  id              String           @id @default(cuid())
+  integrationId   String
+  integration     AdIntegration    @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+  propertyId      String // yalnızca rakam (properties/123 → 123)
+  name            String
+  accountName     String?
+  currency        String?
+  timezone        String?
+  websiteId       String?          @unique
+  website         Website?         @relation(fields: [websiteId], references: [id], onDelete: SetNull)
+  metricsSyncedAt DateTime?
+  metricsError    String?
+  createdAt       DateTime         @default(now())
+  daily           AnalyticsDaily[]
+
+  @@unique([integrationId, propertyId])
+}
+
+// GA4 günlük metrikleri, varsayılan kanal grubuna göre. Kullanıcı sayısı günler ve kanallar arasında toplanamaz.
+model AnalyticsDaily {
+  id         String            @id @default(cuid())
+  propertyId String
+  property   AnalyticsProperty @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  date       String // YYYY-MM-DD, mülkün saat diliminde
+  channel    String // sessionDefaultChannelGroup
+  sessions   Int               @default(0)
+  users      Int               @default(0)
+  keyEvents  Float             @default(0)
+  purchases  Float             @default(0) // ecommercePurchases
+  revenue    Float             @default(0) // purchaseRevenue
+  updatedAt  DateTime          @updatedAt
+
+  @@unique([propertyId, date, channel])
+}
+
+// Vitrin modülü: ikas mağazasının canlı temasında çalışan bir modülün mağazaya özel ayarı.
+model StoreModule {
+  id          String    @id @default(cuid())
+  storeId     String
+  store       Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  moduleKey   String // src/lib/storefront/modules.ts içindeki anahtar
+  enabled     Boolean   @default(false)
+  settings    String    @default("{}") // yayındaki ayarlar (JSON)
+  draft       String? // yayınlanmamış taslak (JSON); yalnızca önizlemede görünür
+  version     Int       @default(0)
+  publishedAt DateTime?
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([storeId, moduleKey])
+}
+
+// Vitrin modülü olayları, gün bazında toplanır (ziyaretçi kimliği saklanmaz).
+model ModuleStat {
+  id        String @id @default(cuid())
+  storeId   String
+  store     Store  @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  moduleKey String
+  day       String // YYYY-MM-DD (UTC)
+  type      String // view | click | use | convert
+  count     Int    @default(0)
+  value     Float  @default(0) // dönüşüm tutarı toplamı
+  @@unique([storeId, moduleKey, day, type])
+}
+
+// Hediye Çarkı katılımı. KVKK: iletişim bilgisi ve IP düz metin saklanmaz; tekrar kontrolü için anahtarlı özet (HMAC) tutulur.
+// İletişim bilgisi yalnızca mağaza "sakla" seçeneğini açtıysa ve ziyaretçi açık rıza verdiyse şifreli (AES-256-GCM) saklanır.
+model WheelEntry {
+  id          String   @id @default(cuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  contactHash String? // e-posta/telefon HMAC
+  contactEnc  String? // yalnızca rıza ile, şifreli
+  consent     Boolean  @default(false)
+  ipHash      String
+  cookieId    String
+  prizeKey    String // dilim kimliği (ayar içindeki sıra değil, kalıcı anahtar)
+  prizeLabel  String
+  prizeType   String // RATIO | FIXED_AMOUNT | FREE_SHIPPING | CODE | NONE
+  code        String?  @unique // kişiye özel ikas kuponu
+  campaignId  String? // ikas kampanya kimliği
+  createdAt   DateTime @default(now())
+
+  @@index([storeId, createdAt])
+  @@index([storeId, contactHash])
+  @@index([storeId, ipHash])
+  @@index([storeId, cookieId])
+}
+
+// Vitrin modülleri için ikas ürün bilgisi (Admin API listProduct): vitrin bağlantısı, kategoriler ve eklenme tarihi.
+// Ortak stok senkronundan bağımsızdır; modüller yayınlanınca ve en fazla 6 saatte bir yenilenir.
+model ProductMeta {
+  id          String   @id @default(cuid())
+  storeId     String
+  store       Store    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  productId   String
+  name        String
+  slug        String
+  categoryIds String   @default("[]") // JSON
+  createdAt   DateTime? // ikas ürün oluşturma zamanı
+  syncedAt    DateTime @default(now())
+
+  @@unique([storeId, productId])
+  @@index([storeId, slug])
 }

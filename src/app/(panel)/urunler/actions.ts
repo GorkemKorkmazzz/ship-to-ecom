@@ -1,5 +1,6 @@
 "use server";
 
+import { assertModule } from "@/lib/access";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { csvNum, parseCsv } from "@/lib/csv";
@@ -18,6 +19,7 @@ const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Bir mağazada olup diğerinde olmayan ürünü (tüm varyantlarıyla) karşı mağazada oluşturur. */
 export async function copyToStore(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "urun");
   const stores = await db.store.findMany({ where: { userId: user.id } });
   const source = stores.find((s) => s.id === str(fd, "from"));
   const target = stores.find((s) => s.id === str(fd, "to"));
@@ -94,6 +96,7 @@ async function readCsv(fd: FormData) {
 /** CSV ile toplu stok ve fiyat güncelleme. Boş hücreler değiştirilmez. */
 export async function bulkUpdate(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "urun");
   const rows = await readCsv(fd);
   const stores = await db.store.findMany({ where: { userId: user.id } });
   const variants = await db.storeVariant.findMany({ where: { storeId: { in: stores.map((s) => s.id) } } });
@@ -158,6 +161,7 @@ export async function bulkUpdate(fd: FormData) {
 /** CSV ile toplu (varyantsız) ürün ekleme: her satır seçili mağazalarda bir ürün. */
 export async function bulkCreate(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "urun");
   const rows = await readCsv(fd);
   if (rows.length > 100) go("/urunler/toplu", "hata", "Toplu ürün eklemede tek seferde en fazla 100 satır yüklenebilir.");
   const stores = await db.store.findMany({ where: { userId: user.id }, orderBy: { createdAt: "asc" } });

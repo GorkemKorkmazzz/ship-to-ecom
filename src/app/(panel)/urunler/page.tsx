@@ -1,3 +1,4 @@
+import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { savePriceRule } from "@/app/actions";
 import { getStores } from "@/lib/cache";
@@ -13,6 +14,7 @@ const price = (n: number | null | undefined) =>
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string; q?: string }> }) {
   const user = await requireUser();
+  const canPrice = hasModule(user, "fiyat"), canProduct = hasModule(user, "urun");
   const sp = await searchParams;
   const q = (sp.q ?? "").trim().toLocaleLowerCase("tr");
   const stores = await getStores(user.id);
@@ -44,14 +46,18 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
       <PageHeader title="Ürünler" desc={`${rows.size} SKU · fiyatlar mağazaların varsayılan fiyatlarıdır`}>
         <div className="flex flex-wrap gap-2">
           <Link href="/urunler/eslestir" className="btn-ghost">SKU eşleştir</Link>
-          <Link href="/urunler/toplu" className="btn-ghost">Toplu işlemler</Link>
-          <Link href="/urunler/yeni" className="btn-ghost">+ Ürün ekle</Link>
+          {canPrice && <Link href="/urunler/tanimlamalar" className="btn-ghost">Tanımlamalar</Link>}
+          {canProduct && <Link href="/urunler/toplu" className="btn-ghost">Toplu işlemler</Link>}
+          {canProduct && <Link href="/urunler/yeni" className="btn-ghost">+ Ürün ekle</Link>}
           <SyncButton path="/urunler" />
         </div>
       </PageHeader>
       <Flash ok={sp.ok} hata={sp.hata} />
 
-      {stores.length >= 2 && (
+      {stores.length >= 2 && !canPrice && (
+        <p className="mb-5 rounded-lg bg-indigo-50 px-4 py-2.5 text-sm text-indigo-800">Otomatik fiyat kuralları ve kategoriye göre toplu fiyat Profesyonel paketinde. <Link href="/lisans" className="font-medium underline">Paketi yükselt</Link></p>
+      )}
+      {stores.length >= 2 && canPrice && (
         <form action={savePriceRule} className="card mb-5">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
@@ -138,7 +144,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
                     {!v ? (
                       (() => {
                         const from = r.per.findIndex((x) => x);
-                        return stores.length > 1 && from >= 0 ? (
+                        return stores.length > 1 && from >= 0 && canProduct ? (
                           <form action={copyToStore} className="inline">
                             <input type="hidden" name="sku" value={r.sku} />
                             <input type="hidden" name="from" value={stores[from].id} />

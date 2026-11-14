@@ -1,5 +1,7 @@
 import { safeEqual } from "@/lib/crypto";
 import { db } from "@/lib/db";
+import { hasModule } from "@/lib/access";
+import { syncAllAds } from "@/lib/ads/sync";
 import { syncUser } from "@/lib/sync";
 
 export const maxDuration = 300;
@@ -20,5 +22,18 @@ export async function GET(req: Request) {
       console.error("cron sync", u.id, e);
     }
   }
-  return Response.json({ users: users.length, failed });
+  // Reklam verisi: seçili Meta / Google Ads hesabı olan kullanıcılar (30 dakikalık önbellek süresi içinde tekrar çağrılmaz).
+  const adUsers = await db.user.findMany({ where: { adIntegrations: { some: { status: "active", OR: [{ accounts: { some: { selected: true } } }, { properties: { some: { websiteId: { not: null } } } }] } } }, select: { id: true, plan: true, suspended: true, paidUntil: true, trialEndsAt: true } });
+  let adErrors = 0;
+  for (const u of adUsers) {
+    // Paketi reklam modüllerini kapsamayan hesabın reklam verisi çekilmez (gereksiz API çağrısı da yapılmaz).
+    if (!hasModule(u, "reklam")) continue;
+    try {
+      adErrors += (await syncAllAds(u.id)).errors.length;
+    } catch (e) {
+      adErrors++;
+      console.error("cron ads", u.id, e);
+    }
+  }
+  return Response.json({ users: users.length, failed, adUsers: adUsers.length, adErrors });
 }

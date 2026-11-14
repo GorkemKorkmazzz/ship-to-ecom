@@ -1,3 +1,5 @@
+import { Locked } from "@/app/(panel)/locked";
+import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { toCsv } from "@/lib/csv";
 import { requireUser } from "@/lib/session";
@@ -13,7 +15,8 @@ const CREATE_TEMPLATE = toCsv(
 const file = "block w-full text-sm text-gray-600 file:mr-3 file:cursor-pointer file:rounded-lg file:border file:border-gray-300 file:bg-white file:px-3 file:py-1.5 file:text-sm file:font-medium";
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string }> }) {
-  await requireUser();
+  const user = await requireUser();
+  if (!hasModule(user, "urun")) return <Locked moduleId="urun" />;
   const sp = await searchParams;
   return (
     <>

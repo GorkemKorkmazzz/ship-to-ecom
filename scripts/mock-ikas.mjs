@@ -41,6 +41,13 @@ http
       return json({ access_token: `tok:${tok[1]}`, token_type: "Bearer", expires_in: 14400 });
     }
 
+    // Kupon kullanımı simülasyonu: curl -X POST "localhost:4010/_coupon_use?store=magaza-a&code=CARK-XXXX"
+    if (url.pathname === "/_coupon_use") {
+      const c = (stores[url.searchParams.get("store")]?.coupons ?? []).find((x) => x.code === url.searchParams.get("code"));
+      if (!c) return json({ error: "kupon yok" }, 404);
+      c.usageCount++;
+      return json({ ok: true, code: c.code, usageCount: c.usageCount });
+    }
     if (url.pathname === "/_order" || url.pathname === "/_set") {
       const st = stores[url.searchParams.get("store")];
       const hit = st && findVariant(st, ({ v }) => v.sku === url.searchParams.get("sku"));
@@ -113,8 +120,12 @@ http
         return json({ data: { saveProduct: { id: p.id, variants: p.variants.map((v) => ({ id: v.id, sku: v.sku })) } } });
       }
       if (op === "listProduct") {
-        const data = st.products.map((p) => ({
+        // Vitrin modülleri için ürün bilgisi: slug, kategoriler, oluşturma zamanı (gerçek şemadaki alan adları).
+        const data = st.products.map((p, i) => ({
           id: p.id, name: p.name,
+          metaData: { slug: p.slug ?? p.name.toLocaleLowerCase("tr").replace(/ı/g, "i").replace(/ş/g, "s").replace(/ü/g, "u").replace(/ö/g, "o").replace(/ç/g, "c").replace(/ğ/g, "g").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") },
+          categoryIds: p.categoryIds ?? (i === 0 ? ["kat-giyim"] : []),
+          createdAt: p.createdAt ?? Date.now() - (i + 1) * 20 * 86400000,
           variants: p.variants.map((v) => ({
             id: v.id, sku: v.sku,
             stocks: [{ stockLocationId: st.loc, stockCount: v.stockCount }],
@@ -138,14 +149,34 @@ http
         const i = variables.input;
         if (!i.title || !i.type || !i.applicablePrice || typeof i.canCombineWithOtherCampaigns !== "boolean" || typeof i.hasCoupon !== "boolean")
           return json({ errors: [{ message: "CampaignInput geçersiz" }] }, 400);
-        const c = { id: `c-${nextId++}`, usageCount: 0, usageLimit: null, dateRange: null, fixedDiscount: null, ...i };
-        (st.campaigns ??= []).push(c);
+        // tieredDiscount, gerçek şemadaki (introspection) zorunlu alanlara göre denetlenir.
+        const td = i.tieredDiscount;
+        if (td && (!Array.isArray(td.rules) || !td.rules.length || td.rules.some((r) => typeof r.amount !== "number")))
+          return json({ errors: [{ message: "TieredDiscountInput geçersiz" }] }, 400);
+        if (td?.filters?.some((f) => !["PRODUCT", "CATEGORY"].includes(f.type) || !Array.isArray(f.idList)))
+          return json({ errors: [{ message: "CampaignFilterInput geçersiz" }] }, 400);
+        const old = i.id && (st.campaigns ??= []).find((x) => x.id === i.id);
+        if (i.id && !old) return json({ errors: [{ message: "Kampanya bulunamadı" }] }, 400);
+        const c = old ? Object.assign(old, i) : { id: `c-${nextId++}`, usageCount: 0, usageLimit: null, dateRange: null, fixedDiscount: null, ...i };
+        if (!old) (st.campaigns ??= []).push(c);
         console.log("kampanya:", JSON.stringify(i));
         return json({ data: { saveCampaign: { id: c.id } } });
       }
       if (op === "campaignAddCoupons") {
+        const inp = variables.input;
+        if (!(st.campaigns ?? []).some((c) => c.id === inp.campaignId)) return json({ errors: [{ message: "Kampanya bulunamadı" }] }, 400);
+        st.coupons ??= [];
+        for (const c of inp.coupons ?? []) {
+          if (typeof c.code !== "string" || typeof c.canCombineWithOtherCampaigns !== "boolean") return json({ errors: [{ message: "NewCouponInput geçersiz" }] }, 400);
+          if (st.coupons.some((x) => x.code === c.code)) return json({ errors: [{ message: "Kupon kodu zaten var" }] }, 400);
+          st.coupons.push({ ...c, campaignId: inp.campaignId, usageCount: 0 });
+        }
         console.log("kupon:", JSON.stringify(variables.input));
         return json({ data: { campaignAddCoupons: [{ id: `cp-${nextId++}` }] } });
+      }
+      if (op === "listCoupon") {
+        const id = variables.id;
+        return json({ data: { listCoupon: { hasNext: false, data: (st.coupons ?? []).filter((c) => c.campaignId === id) } } });
       }
       if (op === "deleteCampaignList") {
         st.campaigns = (st.campaigns ?? []).filter((c) => !variables.idList.includes(c.id));

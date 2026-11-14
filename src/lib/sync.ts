@@ -1,10 +1,13 @@
 import type { Store, StoreVariant } from "@prisma/client";
 import { invalidateUser } from "./cache";
 import { db } from "./db";
+import { hasModule } from "./access";
+import { runAutomations } from "./automation";
 import { adapterFor } from "./platforms";
 import type { PriceWrite, RemoteVariant } from "./platforms/types";
 import { applyRule } from "./pricing";
-import { publish, reconcile } from "./reconcile";
+import { notify, type NewNotification } from "./notify";
+import { allocate, reconcile } from "./reconcile";
 
 // Aynı kullanıcı için eşzamanlı iki senkron çalışmaz. Çalışırken gelen istek,
 // bittikten sonra bir tur daha çalıştırır. (Tek sunucu örneği varsayar; birden fazla
@@ -37,6 +40,7 @@ export function syncUser(userId: string): Promise<void> {
 type Log = { level: string; message: string; sku?: string; storeLabel?: string };
 
 async function runSync(userId: string) {
+  const owner = await db.user.findUniqueOrThrow({ where: { id: userId } });
   const stores = await db.store.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
   const logs: Log[] = [];
   const loaded: { store: Store; locationId: string; rows: Map<string, StoreVariant> }[] = [];
@@ -71,17 +75,25 @@ async function runSync(userId: string) {
   // biri okunamadıysa eksik veriyle stok yazmak tehlikeli olur.
   if (stores.length >= 2 && loaded.length === stores.length) {
     await reconcileStocks(userId, loaded, logs);
-    await applyPriceRule(loaded, logs);
+    // Paket kapsamıyorsa daha önce kurulmuş fiyat kuralı uygulanmaz (kural silinmez; yükseltince yeniden çalışır).
+    if (hasModule(owner, "fiyat")) await applyPriceRule(loaded, logs);
   }
 
+  const touched: string[] = [];
   for (const { store } of loaded) {
     try {
-      await syncOrders(store, logs);
+      touched.push(...(await syncOrders(store, logs)));
       await syncCarts(store, logs);
       await db.store.update({ where: { id: store.id }, data: { lastSyncAt: new Date(), lastError: null } });
     } catch (e) {
       await fail(store, e, logs);
     }
+  }
+
+  try {
+    if (hasModule(owner, "otomasyon")) await runAutomations(userId, touched);
+  } catch (e) {
+    logs.push({ level: "error", message: `Otomasyon çalıştırılamadı: ${e instanceof Error ? e.message : e}`.slice(0, 900) });
   }
 
   if (logs.length) await db.syncLog.createMany({ data: logs.map((l) => ({ ...l, userId })) });
@@ -153,7 +165,12 @@ async function reconcileStocks(
   const shared = new Map((await db.sharedItem.findMany({ where: { userId } })).map((x) => [x.sku, x]));
   const common = [...loaded[0].rows.keys()].filter((sku) => loaded.every((l) => l.rows.has(sku)));
 
-  type Change = { sku: string; name: string; old: number | null; next: number; rows: StoreVariant[]; targets: number[]; pending: number; note: string | null };
+  type Change = { sku: string; name: string; old: number | null; next: number; rows: StoreVariant[]; targets: number[]; pending: number; note: string | null; critical: boolean; wasCritical: boolean };
+  // Akıllı dağıtım paket kapsamıyorsa minimum stok ve kritik mod devre dışı; yalnızca pay ve güvenlik stoğu uygulanır.
+  const smart = hasModule(user, "dagitim");
+  const critical = smart ? user.criticalStock : null;
+  const alloc = loaded.map((l) => ({ sharePercent: l.store.stockSharePercent, minStock: smart ? l.store.minStock : 0, priority: smart && l.store.id === user.priorityStoreId }));
+  const alerts: NewNotification[] = [];
   const changes: Change[] = [];
   const writes = loaded.map(() => [] as { productId: string; variantId: string; stockCount: number }[]);
   const unlink: string[] = [];
@@ -171,10 +188,11 @@ async function reconcileStocks(
     const pending = item?.pendingDelta ?? 0;
     const next = reconcile(old, rows.map((r) => ({ current: r.currentStock, lastSeen: r.lastSeenStock })), pending);
     const safety = set?.safetyStock ?? user.safetyStock;
-    const targets = loaded.map((l) => publish(next, safety, l.store.stockSharePercent));
+    const { targets, critical: isCritical } = allocate(next, safety, alloc, critical);
+    const wasCritical = old !== null && allocate(old, safety, alloc, critical).critical;
     const inSync = rows.every((r, i) => r.currentStock === targets[i] && r.lastSeenStock === targets[i]);
     if (item && old === next && inSync && !pending) continue;
-    changes.push({ sku, name: rows[0].productName, old, next, rows, targets, pending, note: item?.pendingNote ?? null });
+    changes.push({ sku, name: rows[0].productName, old, next, rows, targets, pending, note: item?.pendingNote ?? null, critical: isCritical, wasCritical });
     rows.forEach((r, i) => {
       if (r.currentStock !== targets[i]) writes[i].push({ productId: r.productId, variantId: r.variantId, stockCount: targets[i] });
     });
@@ -229,10 +247,17 @@ async function reconcileStocks(
     const threshold = settings.get(c.sku)?.lowStockThreshold ?? user.lowStockThreshold;
     if (threshold !== null && c.next <= threshold && (c.old === null || c.old > threshold)) {
       logs.push({ level: "warn", sku: c.sku, message: `Düşük stok: ${c.name} — ${c.next} adet kaldı (eşik ${threshold}).` });
+      alerts.push({ userId, kind: "stock", title: `Düşük stok: ${c.name}`, body: `${c.sku} için ortak stok ${c.next} adede indi (eşik ${threshold}).`, link: `/stok/detay?sku=${encodeURIComponent(c.sku)}` });
+    }
+    if (c.critical && !c.wasCritical) {
+      const only = loaded.find((l) => l.store.id === user.priorityStoreId)?.store.label ?? "öncelikli mağaza";
+      logs.push({ level: "warn", sku: c.sku, message: `Kritik stok: ${c.name} yalnızca ${only} mağazasında satışta (${c.targets.reduce((a, b) => Math.max(a, b), 0)} adet).` });
+      alerts.push({ userId, kind: "stock", title: `Kritik stok: ${c.name}`, body: `${c.sku} kritik seviyede; diğer mağazalarda satış durduruldu, yalnızca ${only} satıyor.`, link: `/stok/detay?sku=${encodeURIComponent(c.sku)}` });
     }
   }
   for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
   if (movements.length) await db.stockMovement.createMany({ data: movements });
+  await notify(alerts);
 }
 
 /**
@@ -281,14 +306,18 @@ async function syncOrders(store: Store, logs: Log[]) {
     : new Date(Date.now() - 30 * 24 * 3600_000); // ilk senkron: son 30 gün
   const { orders, rich } = await adapterFor(store).listOrders(store, since);
   if (!rich && orders.length) logs.push({ level: "warn", storeLabel: store.label, message: "Sipariş kaynak/kampanya alanları okunamadı; raporlar bu siparişler için eksik kalır." });
+  const ids: string[] = [];
   for (const o of orders) {
-    await db.order.upsert({
+    const saved = await db.order.upsert({
       where: { storeId_ikasOrderId: { storeId: store.id, ikasOrderId: o.externalId } },
       create: { ...o.data, storeId: store.id, ikasOrderId: o.externalId, lines: { create: o.lines } },
       update: { ...o.data, lines: { deleteMany: {}, create: o.lines } },
+      select: { id: true },
     });
+    ids.push(saved.id);
   }
   await db.store.update({ where: { id: store.id }, data: { lastOrderSyncAt: startedAt } });
+  return ids;
 }
 
 /** Terk edilmiş sepetleri çeker (platform destekliyorsa). Hata olursa senkronun geri kalanını durdurmaz. */

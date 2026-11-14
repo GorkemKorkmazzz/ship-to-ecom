@@ -4,6 +4,7 @@ import { getStores } from "@/lib/cache";
 import { db } from "@/lib/db";
 import { imageUrl } from "@/lib/pricing";
 import { requireUser } from "@/lib/session";
+import { ORDER_FILTERS, ORDER_STATUS, PACKAGE_STATUS, PAYMENT_STATUS, statusOf, type Tone } from "@/lib/status";
 import { Thumb } from "../thumb";
 import { Flash, PageHeader, StoreBadge, SyncButton, fmtDate, fmtMoney } from "../ui";
 import { deleteOrders, restoreOrders, updateOrder } from "./actions";
@@ -11,41 +12,27 @@ import { BulkBar, ConfirmButton } from "./bulk";
 import { OrderTabs } from "./tabs";
 
 const PER_PAGE = 30;
-const G = "bg-emerald-100 text-emerald-700", A = "bg-amber-100 text-amber-800", R = "bg-red-100 text-red-700", N = "bg-gray-100 text-gray-700", B = "bg-sky-100 text-sky-700";
+const TONE: Record<Tone, string> = { green: "bg-emerald-100 text-emerald-700", amber: "bg-amber-100 text-amber-800", red: "bg-red-100 text-red-700", gray: "bg-gray-100 text-gray-700", sky: "bg-sky-100 text-sky-700" };
+const ORDER = ORDER_STATUS, PAYMENT = PAYMENT_STATUS, PACKAGE = PACKAGE_STATUS, FILTERS = ORDER_FILTERS;
 
-const ORDER: Record<string, [string, string]> = {
-  CREATED: ["Oluşturuldu", N], DRAFT: ["Taslak", N], CANCELLED: ["İptal edildi", R], PARTIALLY_CANCELLED: ["Kısmi iptal", R],
-  REFUNDED: ["İade edildi", R], PARTIALLY_REFUNDED: ["Kısmi iade", A], REFUND_REQUESTED: ["İade talebi", A],
-  REFUND_REJECTED: ["İade reddedildi", N], WAITING_UPSELL_ACTION: ["Bekliyor", A],
-};
-const PAYMENT: Record<string, [string, string]> = {
-  PAID: ["Ödendi", G], WAITING: ["Ödeme bekliyor", A], PARTIALLY_PAID: ["Kısmi ödendi", A], FAILED: ["Ödeme başarısız", R],
-};
-const PACKAGE: Record<string, [string, string]> = {
-  UNFULFILLED: ["Hazırlanıyor", A], READY_FOR_SHIPMENT: ["Kargoya hazır", B], PARTIALLY_READY_FOR_SHIPMENT: ["Kısmen hazır", B],
-  READY_FOR_PICK_UP: ["Teslim alınmaya hazır", B], FULFILLED: ["Kargolandı", B], PARTIALLY_FULFILLED: ["Kısmen kargolandı", B],
-  DELIVERED: ["Teslim edildi", G], PARTIALLY_DELIVERED: ["Kısmen teslim", G], UNABLE_TO_DELIVER: ["Teslim edilemedi", R],
-  CANCELLED: ["İptal", R], PARTIALLY_CANCELLED: ["Kısmi iptal", R], CANCEL_REQUESTED: ["İptal talebi", A], CANCEL_REJECTED: ["İptal reddedildi", N],
-  REFUNDED: ["İade", R], PARTIALLY_REFUNDED: ["Kısmi iade", A], REFUND_REQUESTED: ["İade talebi", A],
-  REFUND_REQUEST_ACCEPTED: ["İade kabul edildi", A], REFUND_REJECTED: ["İade reddedildi", N],
-};
-const FILTERS: [string, string, string[]][] = [
-  ["hazirlaniyor", "Hazırlanıyor", ["UNFULFILLED", "READY_FOR_SHIPMENT", "PARTIALLY_READY_FOR_SHIPMENT", "READY_FOR_PICK_UP"]],
-  ["kargoda", "Kargoda", ["FULFILLED", "PARTIALLY_FULFILLED"]],
-  ["teslim", "Teslim edildi", ["DELIVERED", "PARTIALLY_DELIVERED"]],
-  ["iptal-iade", "İptal / iade", Object.keys(PACKAGE).filter((k) => /CANCEL|REFUND|UNABLE/.test(k))],
-];
-
-function Status({ map, value }: { map: Record<string, [string, string]>; value: string | null }) {
-  if (!value) return null;
-  const [label, cls] = map[value] ?? [value, N];
-  return <span className={`badge whitespace-nowrap ${cls}`}>{label}</span>;
+function Status({ map, value }: { map: Record<string, [string, Tone]>; value: string | null }) {
+  const st = statusOf(map, value);
+  if (!st) return null;
+  return <span className={`badge whitespace-nowrap ${TONE[st.tone]}`}>{st.label}</span>;
 }
 
 type Pkg = { id?: string | null; status?: string | null; number: string; barcode: string | null; cargoCompany: string | null; trackingNumber: string | null; trackingLink: string | null };
 const parsePackages = (json: string): Pkg[] => {
   try {
     return JSON.parse(json);
+  } catch {
+    return [];
+  }
+};
+const parseTags = (json: string): string[] => {
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v.map(String) : [];
   } catch {
     return [];
   }
@@ -164,6 +151,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
                   {o.status !== "CREATED" && <Status map={ORDER} value={o.status} />}
                   <Status map={PAYMENT} value={o.paymentStatus} />
                   <Status map={PACKAGE} value={o.packageStatus} />
+                  {parseTags(o.tags).map((t) => <span key={t} className="badge whitespace-nowrap bg-indigo-100 text-indigo-700">#{t}</span>)}
                 </div>
                 <div className="min-w-0 text-sm">
                   {code ? (
@@ -218,7 +206,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
                       <input type="hidden" name="ids" value={o.id} />
                       <input type="hidden" name="back" value={link({ sayfa: page })} />
                       <span className="text-gray-600">{trash ? "Bu sipariş silinmiş." : "Siparişi panelden kaldır"}</span>
-                      {trash ? <button className="btn-ghost">Geri al</button> : <ConfirmButton message={`#${o.orderNumber} numaralı sipariş panelden silinsin mi? ikas'taki sipariş etkilenmez.`}>Sil</ConfirmButton>}
+                      {trash ? <button className="btn-ghost">Geri al</button> : <ConfirmButton message={`#${o.orderNumber} numaralı sipariş panelden silinsin mi? Mağazadaki sipariş etkilenmez.`}>Sil</ConfirmButton>}
                     </form>
                     <form action={updateOrder} hidden={trash} className="rounded-lg border border-indigo-200 bg-white p-3 text-sm">
                       <input type="hidden" name="id" value={o.id} />

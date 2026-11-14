@@ -6,8 +6,8 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin", "lat
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin", "latin-ext"] });
 
 export const metadata: Metadata = {
-  title: "ShipToEcom — ikas mağazaları için ortak stok ve sipariş yönetimi",
-  description: "İki ikas mağazasının stok ve siparişlerini tek panelde birleştirir.",
+  title: "ShipToEcom — e-ticaret mağazaları için ortak stok ve sipariş yönetimi",
+  description: "E-ticaret mağazalarınızın stok ve siparişlerini tek panelde birleştirir.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

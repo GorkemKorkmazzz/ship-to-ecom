@@ -2,15 +2,17 @@ import { storeHost } from "@/lib/platforms";
 import Link from "next/link";
 import { logout } from "@/app/actions";
 import { getStores } from "@/lib/cache";
+import { db } from "@/lib/db";
 import { accountStatus, planById, storeLimitOf } from "@/lib/plans";
 import { requireUser } from "@/lib/session";
 import { Logo } from "./logo";
 import { Nav } from "./nav";
+import { ROUTE_MODULES, hasModule } from "@/lib/access";
 import { STORE_HEX } from "./ui";
 
 export default async function PanelLayout({ children }: { children: React.ReactNode }) {
   const user = await requireUser();
-  const stores = await getStores(user.id);
+  const [stores, unread] = await Promise.all([getStores(user.id), db.notification.count({ where: { userId: user.id, readAt: null } })]);
   const plan = planById(user.plan);
   const status = accountStatus(user, new Date().getTime());
   const daysLeft = user.trialEndsAt ? Math.max(0, Math.ceil((user.trialEndsAt.getTime() - new Date().getTime()) / 86400000)) : 0;
@@ -25,7 +27,7 @@ export default async function PanelLayout({ children }: { children: React.ReactN
           </form>
         </div>
         <div className="flex-1 overflow-y-auto px-3 py-2 lg:py-4">
-          <Nav />
+          <Nav locked={ROUTE_MODULES.filter(([, m]) => !hasModule(user, m)).map(([p]) => p)} />
 
           <div className="mt-6 hidden lg:block">
             <div className="mb-1.5 flex items-center justify-between px-3 text-[11px] font-semibold uppercase tracking-widest text-gray-400">
@@ -42,7 +44,7 @@ export default async function PanelLayout({ children }: { children: React.ReactN
                   </span>
                 </Link>
               ))}
-              {stores.length < storeLimitOf(user.plan) && <Link href="/magazalar" className="block rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">+ Mağaza bağla</Link>}
+              {stores.length < storeLimitOf(user.plan) && <Link href="/entegrasyonlar" className="block rounded-lg border border-dashed border-gray-300 px-3 py-2 text-sm text-gray-500 hover:bg-gray-50">+ Mağaza bağla</Link>}
             </div>
           </div>
         </div>
@@ -67,6 +69,10 @@ export default async function PanelLayout({ children }: { children: React.ReactN
               <input name="q" aria-label="Ürün ara" placeholder="Ürün adı veya SKU ara…" className="flex-1 bg-transparent text-sm outline-none placeholder:text-gray-400" />
             </form>
             <div className="ml-auto flex items-center gap-3">
+              <Link href="/bildirimler" className="relative flex h-9 w-9 items-center justify-center rounded-full text-gray-500 hover:bg-gray-100" aria-label={`Bildirimler${unread ? `, ${unread} okunmamış` : ""}`}>
+                <svg viewBox="0 0 24 24" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21h4" /></svg>
+                {unread > 0 && <span className="absolute -right-0.5 -top-0.5 min-w-[1.1rem] rounded-full bg-red-600 px-1 text-center text-[10px] font-semibold leading-[1.1rem] text-white">{unread > 99 ? "99+" : unread}</span>}
+              </Link>
               <span className="flex h-9 w-9 items-center justify-center rounded-full bg-indigo-100 text-sm font-semibold uppercase text-indigo-700">{user.email[0]}</span>
               <span className="hidden max-w-[14rem] truncate text-sm text-gray-600 xl:inline">{user.email}</span>
               <form action={logout}><button className="btn-ghost">Çıkış</button></form>

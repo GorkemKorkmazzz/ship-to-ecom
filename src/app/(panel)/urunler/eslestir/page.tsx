@@ -15,7 +15,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
     return (
       <div className="card mx-auto max-w-lg text-center">
         <p className="text-sm text-gray-600">SKU eşleştirme için iki mağaza bağlı olmalı.</p>
-        <Link href="/magazalar" className="btn mt-4">Mağazalar</Link>
+        <Link href="/entegrasyonlar" className="btn mt-4">Entegrasyonlar</Link>
       </div>
     );
   }
@@ -47,7 +47,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ o
 
   return (
     <>
-      <PageHeader title="SKU eşleştir" desc="SKU'su farklı olan aynı ürünleri elle eşleştirin; ikas'taki SKU'lar değişmez.">
+      <PageHeader title="SKU eşleştir" desc="SKU'su farklı olan aynı ürünleri elle eşleştirin; mağazalardaki SKU'lar değişmez.">
         <Link href="/urunler" className="btn-ghost">← Ürünler</Link>
       </PageHeader>
       <Flash ok={sp.ok} hata={sp.hata} />

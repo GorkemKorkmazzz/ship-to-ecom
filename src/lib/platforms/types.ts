@@ -2,7 +2,7 @@ import type { Store } from "@prisma/client";
 import type { PriceWrite, RemoteVariant } from "../ikas";
 
 export type { PriceWrite, RemoteVariant };
-export type PlatformId = "ikas" | "tsoft";
+export type PlatformId = "ikas";
 export type StockWrite = { productId: string; variantId: string; stockCount: number };
 
 /** Veritabanına yazılmaya hazır sipariş (platformdan bağımsız). Müşteri adı, e-posta, telefon, açık adres YOK. */

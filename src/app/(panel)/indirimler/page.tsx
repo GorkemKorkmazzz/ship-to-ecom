@@ -1,3 +1,5 @@
+import { Locked } from "@/app/(panel)/locked";
+import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { getCampaigns, getStores } from "@/lib/cache";
 import type { RemoteCampaign } from "@/lib/ikas";
@@ -14,13 +16,14 @@ const TYPE: Record<string, string> = {
 
 export default async function Page({ searchParams }: { searchParams: Promise<{ ok?: string; hata?: string }> }) {
   const user = await requireUser();
+  if (!hasModule(user, "kampanya")) return <Locked moduleId="kampanya" />;
   const sp = await searchParams;
   const stores = await getStores(user.id);
   if (!stores.length) {
     return (
       <div className="card mx-auto max-w-lg text-center">
         <p className="text-sm text-gray-600">İndirim oluşturmak için önce mağaza bağlayın.</p>
-        <Link href="/magazalar" className="btn mt-4">Mağaza bağla</Link>
+        <Link href="/entegrasyonlar" className="btn mt-4">Mağaza bağla</Link>
       </div>
     );
   }

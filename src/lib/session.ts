@@ -32,7 +32,8 @@ export async function getUserId(): Promise<string | null> {
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secretKeyBytes());
-    return typeof payload.uid === "string" ? payload.uid : null;
+    // Mobil uygulama token'ı (typ: "mobile") web çerezi olarak kabul edilmez.
+    return typeof payload.uid === "string" && payload.typ === undefined ? payload.uid : null;
   } catch {
     return null;
   }

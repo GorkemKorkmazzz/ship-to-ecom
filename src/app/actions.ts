@@ -1,5 +1,6 @@
 "use server";
 
+import { assertModule, hasModule } from "@/lib/access";
 import bcrypt from "bcryptjs";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
@@ -11,6 +12,8 @@ import { fetchToken, normalizeStoreName, registerWebhooks } from "@/lib/ikas";
 import { createSession, destroySession, requireUser } from "@/lib/session";
 import { syncUser } from "@/lib/sync";
 
+// Mağaza bağlama ve yönetimi Entegrasyonlar sayfasında.
+const STORES = "/entegrasyonlar";
 const str = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
 const back = (path: string, key: "hata" | "ok", msg: string): never =>
   redirect(`${path}?${key}=${encodeURIComponent(msg)}`);
@@ -30,7 +33,7 @@ export async function register(fd: FormData) {
     },
   });
   await createSession(user.id);
-  redirect("/magazalar");
+  redirect(STORES);
 }
 
 export async function login(fd: FormData) {
@@ -48,42 +51,70 @@ export async function logout() {
   redirect("/giris");
 }
 
-export async function addStore(fd: FormData) {
-  const user = await requireUser();
-  const label = str(fd, "label");
-  const storeName = normalizeStoreName(str(fd, "storeName"));
-  const clientId = str(fd, "clientId");
-  const clientSecret = str(fd, "clientSecret");
-  if (!label || !storeName || !clientId || !clientSecret) back("/magazalar", "hata", "Tüm alanları doldurun.");
-  if (!/^[a-z0-9-]+$/.test(storeName)) back("/magazalar", "hata", "Mağaza adı geçersiz (örnek: magazam).");
-  // Mağaza hakkı pakete göre; sayfadaki form gizlense de sınır burada uygulanır.
-  const limit = storeLimitOf(user.plan);
-  if ((await db.store.count({ where: { userId: user.id } })) >= limit)
-    back("/magazalar", "hata", hasBiggerPlan(user.plan)
-      ? `${planById(user.plan)?.name ?? "Mevcut"} paketinde en fazla ${limit} mağaza bağlanabilir. Daha fazla mağaza için lütfen paketinizi değiştirin.`
-      : `Paketinizin mağaza hakkı (${limit}) doldu. Daha fazla mağaza için destek ile iletişime geçin.`);
-  if (await db.store.findUnique({ where: { userId_storeName: { userId: user.id, storeName } } }))
-    back("/magazalar", "hata", "Bu mağaza zaten bağlı.");
+// ───────────── ikas mağaza bağlantısı ─────────────
+type IkasInput = { label: string; storeName: string; clientId: string; clientSecret: string };
 
+/** Formu ve hesap sınırlarını denetler (mağaza hakkı, aynı mağazanın ikinci kez eklenmesi). */
+async function checkIkas(userId: string, plan: string, fd: FormData): Promise<{ error: string } | { input: IkasInput }> {
+  const input = { label: str(fd, "label"), storeName: normalizeStoreName(str(fd, "storeName")), clientId: str(fd, "clientId"), clientSecret: str(fd, "clientSecret") };
+  if (!input.label || !input.storeName || !input.clientId || !input.clientSecret) return { error: "Tüm alanları doldurun." };
+  if (!/^[a-z0-9-]+$/.test(input.storeName)) return { error: "Mağaza adı geçersiz (örnek: magazam)." };
+  // Mağaza hakkı pakete göre; sayfadaki düğme gizlense de sınır burada uygulanır.
+  const limit = storeLimitOf(plan);
+  if ((await db.store.count({ where: { userId } })) >= limit)
+    return { error: hasBiggerPlan(plan)
+      ? `${planById(plan)?.name ?? "Mevcut"} paketinde en fazla ${limit} mağaza bağlanabilir. Daha fazla mağaza için lütfen paketinizi değiştirin.`
+      : `Paketinizin mağaza hakkı (${limit}) doldu. Daha fazla mağaza için destek ile iletişime geçin.` };
+  if (await db.store.findUnique({ where: { userId_storeName: { userId, storeName: input.storeName } } })) return { error: "Bu mağaza zaten bağlı." };
+  return { input };
+}
+
+export type ConnectState = { ok?: boolean; done?: boolean; message?: string; at?: number } | null;
+
+/** Bilgileri kaydetmeden ikas'tan token alarak bağlantıyı dener. */
+export async function testIkasConnection(_prev: ConnectState, fd: FormData): Promise<ConnectState> {
+  const user = await requireUser();
+  const c = await checkIkas(user.id, user.plan, fd);
+  if ("error" in c) return { ok: false, message: c.error };
+  try {
+    await fetchToken(c.input.storeName, c.input.clientId, c.input.clientSecret);
+    return { ok: true, message: `Bağlantı başarılı: ${c.input.storeName}.myikas.com. Kaydetmek için “Mağazayı bağla”ya basın.`, at: Date.now() };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "ikas bağlantısı kurulamadı." };
+  }
+}
+
+/** Bağlantıyı doğrular ve mağazayı kaydeder. Client Secret şifreli saklanır, sayfaya geri gönderilmez. */
+export async function connectIkas(_prev: ConnectState, fd: FormData): Promise<ConnectState> {
+  const user = await requireUser();
+  const c = await checkIkas(user.id, user.plan, fd);
+  if ("error" in c) return { ok: false, message: c.error };
   let token;
   try {
-    token = await fetchToken(storeName, clientId, clientSecret);
+    token = await fetchToken(c.input.storeName, c.input.clientId, c.input.clientSecret);
   } catch (e) {
-    back("/magazalar", "hata", e instanceof Error ? e.message : "ikas bağlantısı kurulamadı.");
+    return { ok: false, message: e instanceof Error ? e.message : "ikas bağlantısı kurulamadı." };
   }
-  await db.store.create({
-    data: {
-      userId: user.id,
-      label,
-      storeName,
-      clientId,
-      clientSecretEnc: encrypt(clientSecret),
-      accessToken: token!.accessToken,
-      tokenExpiresAt: new Date(Date.now() + token!.expiresIn * 1000),
-      webhookSecret: randomToken(),
-    },
-  });
-  back("/magazalar", "ok", "Mağaza bağlandı. Stokların eşitlenmesi için “Şimdi senkronize et”e basın.");
+  try {
+    await db.store.create({
+      data: {
+        userId: user.id, platform: "ikas", label: c.input.label, storeName: c.input.storeName, clientId: c.input.clientId,
+        clientSecretEnc: encrypt(c.input.clientSecret), accessToken: token.accessToken,
+        tokenExpiresAt: new Date(Date.now() + token.expiresIn * 1000), webhookSecret: randomToken(),
+      },
+    });
+  } catch {
+    return { ok: false, message: "Bu mağaza zaten bağlı." }; // eşzamanlı iki gönderimde tekil anahtar korur
+  }
+  invalidateUser(user.id);
+  revalidatePath("/", "layout");
+  return { ok: true, done: true, message: `${c.input.label} bağlandı. Stokların eşitlenmesi için “Şimdi senkronize et”e basın.`, at: Date.now() };
+}
+
+/** Eski form (JS olmadan gönderim) için: hata da başarı da sayfaya yönlendirilir. */
+export async function addStore(fd: FormData) {
+  const r = await connectIkas(null, fd);
+  back(STORES, r?.ok ? "ok" : "hata", r?.message ?? "ikas bağlantısı kurulamadı.");
 }
 
 export async function deleteStore(fd: FormData) {
@@ -96,22 +127,22 @@ export async function deleteStore(fd: FormData) {
     db.storeVariant.updateMany({ where: { store: { userId: user.id } }, data: { lastSeenStock: null } }),
   ]);
   invalidateUser(user.id);
-  back("/magazalar", "ok", "Mağaza kaldırıldı.");
+  back(STORES, "ok", "Mağaza kaldırıldı.");
 }
 
 export async function setupWebhooks(fd: FormData) {
   const user = await requireUser();
   const store = await db.store.findFirst({ where: { id: str(fd, "id"), userId: user.id } });
-  if (!store) back("/magazalar", "hata", "Mağaza bulunamadı.");
+  if (!store) back(STORES, "hata", "Mağaza bulunamadı.");
   const base = (process.env.APP_URL ?? "").replace(/\/$/, "");
-  if (!base.startsWith("https://")) back("/magazalar", "hata", "Webhook için APP_URL https adresi olmalı (yayına alınca çalışır).");
+  if (!base.startsWith("https://")) back(STORES, "hata", "Webhook için APP_URL https adresi olmalı (yayına alınca çalışır).");
   try {
     await registerWebhooks(store!, `${base}/api/webhooks/ikas/${store!.id}/${store!.webhookSecret}`);
   } catch (e) {
-    back("/magazalar", "hata", e instanceof Error ? e.message : "Webhook kurulamadı.");
+    back(STORES, "hata", e instanceof Error ? e.message : "Webhook kurulamadı.");
   }
   await db.store.update({ where: { id: store!.id }, data: { webhooksActive: true } });
-  back("/magazalar", "ok", "Webhook'lar kuruldu; sipariş ve stok değişiklikleri anında işlenecek.");
+  back(STORES, "ok", "Webhook'lar kuruldu; sipariş ve stok değişiklikleri anında işlenecek.");
 }
 
 export async function syncNow(fd: FormData) {
@@ -129,6 +160,7 @@ export async function syncNow(fd: FormData) {
 // ───────────── Otomatik fiyat kuralı ─────────────
 export async function savePriceRule(fd: FormData) {
   const user = await requireUser();
+  assertModule(user, "fiyat");
   const targetId = str(fd, "storeId");
   const n = (k: string) => Number(str(fd, k).replace(",", ".")) || 0;
   const percent = n("percent");
@@ -173,11 +205,17 @@ async function syncThen(userId: string, path: string, okMsg: string): Promise<ne
 export async function saveStockSettings(fd: FormData) {
   const user = await requireUser();
   const stores = await db.store.findMany({ where: { userId: user.id } });
-  const shares = stores.map((s) => ({ id: s.id, pct: optNum(fd, `share_${s.id}`) ?? 100 }));
+  // Akıllı dağıtım alanları (minimum stok, kritik seviye, öncelikli mağaza) yalnızca paket kapsıyorsa değiştirilir.
+  const smart = hasModule(user, "dagitim");
+  const shares = stores.map((s) => ({ id: s.id, pct: optNum(fd, `share_${s.id}`) ?? 100, min: smart ? optNum(fd, `min_${s.id}`) ?? 0 : s.minStock }));
   if (shares.some((s) => s.pct > 100)) back("/stok", "hata", "Mağaza payı %100'ü geçemez.");
+  // Öncelikli mağaza yalnızca kullanıcının kendi mağazalarından biri olabilir.
+  const priorityStoreId = !smart ? user.priorityStoreId : stores.some((s) => s.id === str(fd, "priorityStoreId")) ? str(fd, "priorityStoreId") : null;
+  const criticalStock = smart ? optNum(fd, "criticalStock") : user.criticalStock;
+  if (criticalStock !== null && !priorityStoreId) back("/stok", "hata", "Kritik stok modu için öncelikli mağaza seçin.");
   await db.$transaction([
-    db.user.update({ where: { id: user.id }, data: { safetyStock: optNum(fd, "safetyStock") ?? 0, lowStockThreshold: optNum(fd, "lowStockThreshold") } }),
-    ...shares.map((s) => db.store.update({ where: { id: s.id }, data: { stockSharePercent: s.pct } })),
+    db.user.update({ where: { id: user.id }, data: { safetyStock: optNum(fd, "safetyStock") ?? 0, lowStockThreshold: optNum(fd, "lowStockThreshold"), criticalStock, priorityStoreId } }),
+    ...shares.map((s) => db.store.update({ where: { id: s.id }, data: { stockSharePercent: s.pct, minStock: s.min } })),
   ]);
   await syncThen(user.id, "/stok", "Stok ayarları kaydedildi ve mağazalara uygulandı.");
 }
@@ -208,7 +246,7 @@ export async function adjustStock(fd: FormData) {
   const target = optNum(fd, "stock");
   if (target === null) backDetail(sku, "hata", "Geçerli bir stok adedi girin.");
   const item = await db.sharedItem.findUnique({ where: { userId_sku: { userId: user.id, sku } } });
-  if (!item) backDetail(sku, "hata", "Bu SKU ortak stoğa bağlı değil; stok ikas panelinden değiştirilmeli.");
+  if (!item) backDetail(sku, "hata", "Bu SKU ortak stoğa bağlı değil; stok mağaza panelinden değiştirilmeli.");
   // Düzeltme, yarış olmaması için bir sonraki senkron turunda (kilit altında) uygulanır.
   await db.sharedItem.update({
     where: { id: item!.id },

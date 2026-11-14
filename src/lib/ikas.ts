@@ -502,10 +502,30 @@ export async function saveCampaign(store: Store, input: Record<string, unknown>)
   return d.saveCampaign.id;
 }
 
-export async function addCoupon(store: Store, campaignId: string, code: string, canCombineWithOtherCampaigns: boolean) {
+/** limits: NewCouponInput.usageLimit / usageLimitPerCustomer (şema introspection ile doğrulandı). */
+export async function addCoupon(
+  store: Store, campaignId: string, code: string, canCombineWithOtherCampaigns: boolean,
+  limits?: { usageLimit?: number; usageLimitPerCustomer?: number },
+) {
   await gql(store, `mutation($input: AddCouponsInput!) { campaignAddCoupons(input: $input) { id } }`, {
-    input: { campaignId, coupons: [{ code, canCombineWithOtherCampaigns }] },
+    input: { campaignId, coupons: [{ code, canCombineWithOtherCampaigns, ...(limits ?? {}) }] },
   });
+}
+
+/** Kampanyanın kuponları ve kullanım sayıları (listCoupon, campaignId: { eq }). */
+export async function listCouponUsage(store: Store, campaignId: string): Promise<{ code: string; usageCount: number }[]> {
+  type Resp = { listCoupon: { hasNext: boolean; data: { code: string; usageCount: number }[] } };
+  const out: { code: string; usageCount: number }[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const d = await gql<Resp>(
+      store,
+      `query($id: String!, $page: Int!) { listCoupon(campaignId: { eq: $id }, pagination: { limit: 200, page: $page }) { hasNext data { code usageCount } } }`,
+      { id: campaignId, page },
+    );
+    out.push(...d.listCoupon.data);
+    if (!d.listCoupon.hasNext) break;
+  }
+  return out;
 }
 
 export async function deleteCampaigns(store: Store, idList: string[]) {
@@ -558,4 +578,22 @@ export async function getProductFull(store: Store, productId: string): Promise<F
   const p = d.listProduct.data[0];
   if (!p) throw new IkasError("Ürün kaynak mağazada bulunamadı.");
   return { ...p, partial };
+}
+
+export type ProductMetaRemote = { id: string; name: string; createdAt: number | null; categoryIds: string[] | null; metaData: { slug: string | null } | null };
+
+/** Ürünlerin vitrin bağlantısı, kategorileri ve oluşturma zamanı (listProduct; alanlar introspection ile doğrulandı). */
+export async function listProductMeta(store: Store): Promise<ProductMetaRemote[]> {
+  type Resp = { listProduct: { hasNext: boolean; data: ProductMetaRemote[] } };
+  const out: ProductMetaRemote[] = [];
+  for (let page = 1; page <= 100; page++) {
+    const d = await gql<Resp>(
+      store,
+      `query($page: Int!) { listProduct(pagination: { limit: 100, page: $page }) { hasNext data { id name createdAt categoryIds metaData { slug } } } }`,
+      { page },
+    );
+    out.push(...d.listProduct.data);
+    if (!d.listProduct.hasNext) break;
+  }
+  return out;
 }

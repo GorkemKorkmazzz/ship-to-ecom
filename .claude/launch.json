@@ -19,14 +19,6 @@
       "port": 4010
     },
     {
-      "name": "sahte-tsoft",
-      "runtimeExecutable": "node",
-      "runtimeArgs": [
-        "scripts/mock-tsoft.mjs"
-      ],
-      "port": 4020
-    },
-    {
       "name": "test",
       "runtimeExecutable": "env",
       "runtimeArgs": [
@@ -38,12 +30,18 @@
         "IKAS_GRAPHQL_URL=http://localhost:4010/graphql",
         "IKAS_TOKEN_URL=http://localhost:4010/{store}/token",
         "IKAS_IMAGE_URL=http://localhost:4010/image",
-        "TSOFT_CLIENT_ID=app.test",
-        "TSOFT_CLIENT_SECRET=gizli",
-        "TSOFT_API_URL=http://localhost:4020/{domain}/api/v3/admin/2026-01",
-        "TSOFT_TOKEN_URL=http://localhost:4020/oauth/token",
-        "TSOFT_INSTALL_URL=http://localhost:4020/install",
-        "TSOFT_PANEL_URL=http://localhost:4020/panel",
+        "META_APP_ID=test-app",
+        "META_APP_SECRET=test-secret",
+        "META_DIALOG_URL=http://localhost:4030/dialog/oauth",
+        "META_GRAPH_URL=http://localhost:4030",
+        "GOOGLE_CLIENT_ID=test-client",
+        "GOOGLE_CLIENT_SECRET=test-secret",
+        "GOOGLE_AUTH_URL=http://localhost:4040/auth",
+        "GOOGLE_TOKEN_URL=http://localhost:4040/token",
+        "GOOGLE_REVOKE_URL=http://localhost:4040/revoke",
+        "GOOGLE_ADS_URL=http://localhost:4040/ads",
+        "GA4_DATA_URL=http://localhost:4040/ga4data",
+        "GA4_ADMIN_URL=http://localhost:4040/ga4admin",
         "npx",
         "next",
         "dev",
@@ -51,6 +49,33 @@
         "3100"
       ],
       "port": 3100
+    },
+    {
+      "name": "mobil",
+      "runtimeExecutable": "mobile/node_modules/.bin/expo",
+      "runtimeArgs": [
+        "start",
+        "mobile",
+        "--port",
+        "8081"
+      ],
+      "port": 8081
+    },
+    {
+      "name": "sahte-meta",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/mock-meta.mjs"
+      ],
+      "port": 4030
+    },
+    {
+      "name": "sahte-google",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "scripts/mock-google.mjs"
+      ],
+      "port": 4040
     }
   ]
 }
