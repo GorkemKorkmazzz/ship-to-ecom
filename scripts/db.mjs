@@ -7,6 +7,7 @@
 //   node scripts/db.mjs deploy     -> yalnızca PostgreSQL'de: generate + db push (start öncesi)
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,10 +37,21 @@ if (cmd === "generate") {
   if (!isPostgres) {
     console.log("db deploy: DATABASE_URL PostgreSQL değil, atlandı.");
   } else {
-    const schema = schemaPath();
-    prisma("generate", "--schema", schema);
-    // Veri kaybına yol açacak değişikliklerde durur (--accept-data-loss verilmez).
-    prisma("db", "push", "--schema", schema, "--skip-generate");
+    // Hata uygulamanın açılmasını engellemez: sonuç /api/durum ucundan okunabilsin diye kaydedilir.
+    let adim = "sema";
+    let ok = true;
+    try {
+      const schema = schemaPath();
+      adim = "generate";
+      prisma("generate", "--schema", schema);
+      adim = "db push";
+      // Veri kaybına yol açacak değişikliklerde durur (--accept-data-loss verilmez).
+      prisma("db", "push", "--schema", schema, "--skip-generate");
+    } catch (e) {
+      ok = false;
+      console.error(`db deploy: "${adim}" adımı başarısız oldu.`, e?.message ?? e);
+    }
+    writeFileSync(join(tmpdir(), "shiptoecom-db-deploy.json"), JSON.stringify({ ok, adim, zaman: new Date().toISOString() }));
   }
 } else {
   console.error("Kullanım: node scripts/db.mjs <generate|deploy>");
