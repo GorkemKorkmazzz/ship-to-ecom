@@ -24,6 +24,8 @@ const META_MODULES = new Set(["flash-urunler", "fiyat-alti-indirim", "urun-etike
 async function syncRemote(storeId: string, moduleKey: string, prev: Settings | null, next: Settings, enabled: boolean) {
   if (moduleKey !== TIER_MODULE && moduleKey !== WHEEL_MODULE && !DISCOUNT_MODULES[moduleKey] && !META_MODULES.has(moduleKey)) return { settings: next, error: null };
   const store = await db.store.findUniqueOrThrow({ where: { id: storeId } });
+  // Demo mağaza: ikas'a istek gönderilmez; ayarlar yalnızca panelde saklanır.
+  if (store.clientId === "demo") return { settings: next, error: null };
   if (META_MODULES.has(moduleKey) && enabled) {
     try {
       await refreshProductMeta(store);

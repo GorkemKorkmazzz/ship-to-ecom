@@ -28,8 +28,14 @@ export type OrderRow = {
     district?: string | null;
     couponCode?: string | null;
     campaigns?: string; // JSON
+    // Finansal alanlar (platform sağlıyorsa; yoksa alan hiç gönderilmez)
+    totalPrice?: number | null;
+    shippingTotal?: number | null;
+    shippingTax?: number | null;
+    taxTotal?: number | null;
+    finSyncedAt?: Date | null;
   };
-  lines: { sku: string; name: string; quantity: number; finalPrice: number | null; imageId: string | null; ikasLineId: string | null; status: string | null }[];
+  lines: { sku: string; name: string; quantity: number; finalPrice: number | null; imageId: string | null; ikasLineId: string | null; status: string | null; listPrice?: number | null; taxAmount?: number | null }[];
 };
 
 export type CartRow = {
@@ -67,7 +73,9 @@ export interface PlatformAdapter {
   setStocks(store: Store, locationId: string, items: StockWrite[]): Promise<void>;
   setPrices(store: Store, items: PriceWrite[]): Promise<void>;
   /** rich=false: rapor alanları (kanal, il, kampanya) okunamadı. */
-  listOrders(store: Store, since: Date): Promise<{ orders: OrderRow[]; rich: boolean }>;
+  listOrders(store: Store, since: Date): Promise<{ orders: OrderRow[]; rich: boolean; fin?: boolean }>;
+  /** Siparişin başarılı iade ödemeleri (platform destekliyorsa). */
+  listRefunds?(store: Store, orderExternalId: string): Promise<{ externalId: string; amount: number; currency: string; refundedAt: Date; reason: string | null }[]>;
   /** Terk edilmiş sepetler (platform desteklemiyorsa tanımsız). */
   listCarts?(store: Store, since: Date): Promise<CartRow[]>;
 }

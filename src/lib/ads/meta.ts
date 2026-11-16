@@ -5,6 +5,8 @@
 import { createHmac } from "crypto";
 import { decrypt, encrypt } from "../crypto";
 import { db } from "../db";
+import { runProductSync, syncMetaProducts } from "./product-sync";
+import { levelFailure, metaBudget, syncMetaLevels } from "./levels";
 import { notify } from "../notify";
 
 const VERSION = process.env.META_GRAPH_VERSION ?? "v27.0";
@@ -38,7 +40,7 @@ const THROTTLE = new Set([4, 17, 32, 613, 80000, 80004]);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Graph API GET. Kısıtlama (rate limit) ve 5xx hatalarında artan beklemeyle en fazla 3 kez yeniden dener. */
-async function graph<T>(path: string, params: Record<string, string>, token?: string): Promise<T> {
+export async function graph<T>(path: string, params: Record<string, string>, token?: string): Promise<T> {
   const app = metaApp();
   const q = new URLSearchParams(params);
   if (token) {
@@ -144,7 +146,7 @@ const PURCHASE_TYPES = ["omni_purchase", "offsite_conversion.fb_pixel_purchase",
 
 type ActionStat = { action_type: string; value: string };
 type InsightRow = {
-  campaign_id: string; campaign_name?: string; date_start: string; spend?: string; impressions?: string; reach?: string; clicks?: string;
+  campaign_id: string; campaign_name?: string; date_start: string; spend?: string; impressions?: string; reach?: string; clicks?: string; inline_link_clicks?: string;
   actions?: ActionStat[]; action_values?: ActionStat[]; account_currency?: string;
 };
 const n = (v: string | undefined) => {
@@ -153,6 +155,21 @@ const n = (v: string | undefined) => {
 };
 export function purchaseOf(list: ActionStat[] | undefined): number {
   for (const t of PURCHASE_TYPES) {
+    const hit = list?.find((a) => a.action_type === t);
+    if (hit) return n(hit.value);
+  }
+  return 0;
+}
+// Huni eylemleri (Meta ads-action-stats belgesindeki adlar). Her biri için öncelik sırasıyla TEK tür alınır (omni_ toplam türdür;
+// piksel türüyle birlikte toplanırsa aynı eylem iki kez sayılır).
+export const FUNNEL_ACTIONS = {
+  landingPageViews: ["landing_page_view"],
+  viewContent: ["omni_view_content", "offsite_conversion.fb_pixel_view_content"],
+  addToCart: ["omni_add_to_cart", "offsite_conversion.fb_pixel_add_to_cart"],
+  initiateCheckout: ["omni_initiated_checkout", "offsite_conversion.fb_pixel_initiate_checkout"],
+} as const;
+export function actionOf(list: ActionStat[] | undefined, types: readonly string[]): number {
+  for (const t of types) {
     const hit = list?.find((a) => a.action_type === t);
     if (hit) return n(hit.value);
   }
@@ -181,9 +198,9 @@ export async function syncMetaMetrics(adAccountId: string, userId: string, force
   const since = new Date(until.getTime() - (acc.metricsSyncedAt ? REFRESH_DAYS : FIRST_SYNC_DAYS) * 86400000);
   const act = `act_${acc.externalId}`;
   const rows: InsightRow[] = [];
-  const campaigns: { id: string; name: string; effective_status?: string; objective?: string }[] = [];
+  const campaigns: { id: string; name: string; effective_status?: string; objective?: string; daily_budget?: string; lifetime_budget?: string }[] = [];
   try {
-    let c = await graph<{ data: typeof campaigns; paging?: { next?: string } }>(`/${act}/campaigns`, { fields: "id,name,effective_status,objective", limit: "200" }, token);
+    let c = await graph<{ data: typeof campaigns; paging?: { next?: string } }>(`/${act}/campaigns`, { fields: "id,name,effective_status,objective,daily_budget,lifetime_budget", limit: "200" }, token);
     for (let i = 0; i < 50; i++) {
       campaigns.push(...c.data);
       if (!c.paging?.next) break;
@@ -192,7 +209,7 @@ export async function syncMetaMetrics(adAccountId: string, userId: string, force
     let page = await graph<{ data: InsightRow[]; paging?: { next?: string } }>(`/${act}/insights`, {
       level: "campaign", time_increment: "1", limit: "500",
       time_range: JSON.stringify({ since: ymd(since, acc.timezone), until: ymd(until, acc.timezone) }),
-      fields: "campaign_id,campaign_name,spend,impressions,reach,clicks,actions,action_values,account_currency",
+      fields: "campaign_id,campaign_name,spend,impressions,reach,clicks,inline_link_clicks,actions,action_values,account_currency",
     }, token);
     for (let i = 0; i < 200; i++) {
       rows.push(...page.data);
@@ -205,16 +222,22 @@ export async function syncMetaMetrics(adAccountId: string, userId: string, force
     throw e;
   }
 
+  // Kampanya bütçesi (CBO) varsa "campaign", yoksa bütçe reklam seti düzeyindedir. Listede olmayan kampanyada bütçe bilinmez.
+  const budgetOf = (c: { daily?: string; lifetime?: string; listed?: boolean }) => {
+    if (!c.listed) return {};
+    const daily = metaBudget(c.daily, acc.currency), lifetime = metaBudget(c.lifetime, acc.currency);
+    return { dailyBudget: daily, lifetimeBudget: lifetime, budgetLevel: daily || lifetime ? "campaign" : "adset" };
+  };
   // Kampanyalar: liste uç noktasından gelenler ve yalnızca metriklerde görünenler (ör. silinmiş kampanyalar)
-  const names = new Map<string, { name: string; status?: string; objective?: string }>();
-  for (const c of campaigns) names.set(c.id, { name: c.name, status: c.effective_status, objective: c.objective });
+  const names = new Map<string, { name: string; status?: string; objective?: string; daily?: string; lifetime?: string; listed?: boolean }>();
+  for (const c of campaigns) names.set(c.id, { name: c.name, status: c.effective_status, objective: c.objective, daily: c.daily_budget, lifetime: c.lifetime_budget, listed: true });
   for (const r of rows) if (!names.has(r.campaign_id)) names.set(r.campaign_id, { name: r.campaign_name ?? r.campaign_id });
   const idOf = new Map<string, string>();
   for (const [externalId, c] of names) {
     const saved = await db.adCampaign.upsert({
       where: { adAccountId_externalId: { adAccountId: acc.id, externalId } },
-      create: { adAccountId: acc.id, externalId, name: c.name, status: c.status ?? null, objective: c.objective ?? null },
-      update: { name: c.name, ...(c.status ? { status: c.status } : {}), ...(c.objective ? { objective: c.objective } : {}) },
+      create: { adAccountId: acc.id, externalId, name: c.name, status: c.status ?? null, objective: c.objective ?? null, ...budgetOf(c) },
+      update: { name: c.name, ...(c.status ? { status: c.status } : {}), ...(c.objective ? { objective: c.objective } : {}), ...budgetOf(c) },
       select: { id: true },
     });
     idOf.set(externalId, saved.id);
@@ -225,11 +248,25 @@ export async function syncMetaMetrics(adAccountId: string, userId: string, force
     const data = {
       currency: r.account_currency ?? acc.currency, spend: n(r.spend), impressions: Math.round(n(r.impressions)), reach: Math.round(n(r.reach)),
       clicks: Math.round(n(r.clicks)), purchases: purchaseOf(r.actions), purchaseValue: purchaseOf(r.action_values),
+      // Huni: alan dönmediyse 0 değil null (bağlantı tıklaması); eylem listesi döndüyse eksik eylem gerçekten 0'dır.
+      linkClicks: r.inline_link_clicks === undefined ? null : Math.round(n(r.inline_link_clicks)),
+      landingPageViews: actionOf(r.actions, FUNNEL_ACTIONS.landingPageViews), viewContent: actionOf(r.actions, FUNNEL_ACTIONS.viewContent),
+      addToCart: actionOf(r.actions, FUNNEL_ACTIONS.addToCart), initiateCheckout: actionOf(r.actions, FUNNEL_ACTIONS.initiateCheckout),
     };
     return db.adDailyMetric.upsert({ where: { campaignId_date: { campaignId, date: r.date_start } }, create: { adAccountId: acc.id, campaignId, date: r.date_start, ...data }, update: data });
   });
   for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
-  await db.adAccount.update({ where: { id: acc.id }, data: { metricsSyncedAt: new Date(), metricsError: null } });
+  const sinceDay = ymd(since, acc.timezone);
+  await db.adAccount.update({ where: { id: acc.id }, data: { metricsSyncedAt: new Date(), metricsError: null, ...(!acc.metricsFrom || sinceDay < acc.metricsFrom ? { metricsFrom: sinceDay } : {}) } });
+  // Reklam seti / reklam düzeyi: ayrı adım; hata verirse kampanya verisi yine kaydedilmiş olur.
+  try {
+    await syncMetaLevels(acc, token, { since: sinceDay, until: ymd(until, acc.timezone) });
+    await db.adAccount.update({ where: { id: acc.id }, data: { levelSyncedAt: new Date(), levelError: null } });
+  } catch (e) {
+    await levelFailure(acc, userId, e);
+  }
+  // Ürün düzeyi: ayrı adım, kendi hata kaydıyla.
+  await runProductSync(acc, userId, () => syncMetaProducts(acc, token, { since: sinceDay, until: ymd(until, acc.timezone) }));
   return { skipped: false, rows: rows.length };
 }
 
@@ -244,6 +281,7 @@ export async function saveMetaIntegration(userId: string, x: Awaited<ReturnType<
 
 /** Meta tarafındaki uygulama iznini geri almayı dener; başarısız olsa da yerel bağlantı silinir. */
 export async function revokeMeta(accessTokenEnc: string, externalUserId: string) {
+  if (externalUserId.startsWith("demo-")) return; // demo bağlantı: Meta'ya istek yok
   const app = metaApp();
   const token = decrypt(accessTokenEnc);
   const q = new URLSearchParams({ access_token: token, ...(app ? { appsecret_proof: createHmac("sha256", app.appSecret).update(token).digest("hex") } : {}) });

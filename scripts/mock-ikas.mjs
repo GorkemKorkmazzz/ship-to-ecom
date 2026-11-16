@@ -16,6 +16,7 @@ const mk = (stocks) => ({
     { id: "p3", name: stocks[4], variants: [["v4", stocks[5], stocks[3]]] },
   ].map((p) => ({ ...p, variants: p.variants.map(([id, sku, stockCount]) => ({ id, sku, stockCount, sellPrice: 349.9, discountPrice: sku === "TS-002" ? 299.9 : null, buyPrice: 120, imageId: `img-${sku}` })) })),
 });
+const mode = { finYok: false };
 const stores = {
   // (fiyatlar: sellPrice 349.9; saveVariantPrices ile değişir)
   "magaza-a": mk([25, 10, 8, 5, "Sadece A'da Şapka", "SP-A01"]),
@@ -48,12 +49,23 @@ http
       c.usageCount++;
       return json({ ok: true, code: c.code, usageCount: c.usageCount });
     }
+    if (url.pathname === "/_refund") {
+      // Örn: /_refund?store=magaza-a&order=o1001&amount=100 → siparişi kısmi iade durumuna alır, iade işlemi ekler.
+      const st = stores[url.searchParams.get("store")];
+      const o = st?.orders.find((x) => x.id === url.searchParams.get("order"));
+      if (!o) return json({ error: "sipariş yok" }, 404);
+      o.status = url.searchParams.get("full") ? "REFUNDED" : "PARTIALLY_REFUNDED"; o.updatedAt = Date.now();
+      (st.transactions ??= {})[o.id] = [...(st.transactions[o.id] ?? []), { amount: Number(url.searchParams.get("amount")), currencyCode: "TRY", status: "SUCCESS", type: "REFUND", processedAt: Number(url.searchParams.get("at") ?? Date.now()), gatewayReferenceId: `gw-${o.id}-${(st.transactions[o.id] ?? []).length}`, refundReason: "Müşteri iadesi" }];
+      return json({ ok: true });
+    }
+    if (url.pathname === "/_mod") { for (const k of ["finYok"]) if (url.searchParams.has(k)) mode[k] = url.searchParams.get(k) === "1"; return json(mode); }
     if (url.pathname === "/_order" || url.pathname === "/_set") {
       const st = stores[url.searchParams.get("store")];
       const hit = st && findVariant(st, ({ v }) => v.sku === url.searchParams.get("sku"));
       if (!hit) return json({ error: "store/sku yok" }, 404);
       if (url.pathname === "/_set") {
-        hit.v.stockCount = Number(url.searchParams.get("stock"));
+        if (url.searchParams.has("stock")) hit.v.stockCount = Number(url.searchParams.get("stock"));
+        if (url.searchParams.has("buy")) hit.v.buyPrice = url.searchParams.get("buy") === "" ? null : Number(url.searchParams.get("buy")); // maliyet geçmişi testi
       } else {
         const qty = Number(url.searchParams.get("qty") ?? 1);
         hit.v.stockCount -= qty;
@@ -73,8 +85,15 @@ http
           orderAdjustments: orderNo % 2 ? [{ name: "Kasım indirimi", type: "DECREMENT", amount: 52.5, campaignType: "RATIO" }] : [],
           shippingAddress: { city: { name: ["İstanbul", "Ankara", "İzmir"][orderNo % 3] }, district: { name: ["Kadıköy", "Çankaya", "Bornova"][orderNo % 3] }, firstName: "Gizli", addressLine1: "Gizli adres" },
           orderPackages: orderNo % 3 === 0 ? [] : [{ id: `pk-${orderNo}`, orderPackageNumber: `${orderNo - 1}-1`, orderPackageFulfillStatus: "READY_FOR_SHIPMENT", orderLineItemIds: [`li-${orderNo}`], trackingInfo: { barcode: `7340000${orderNo}`, cargoCompany: "Deneme Kargo", trackingNumber: `TR${orderNo}99`, trackingLink: "https://example.com/takip" } }],
-          orderLineItems: [{ id: `li-${orderNo}`, status: "UNFULFILLED", quantity: qty, finalPrice: 349.9, variant: { name: hit.p.name, sku: hit.v.sku, mainImageId: hit.v.imageId ?? null } }],
+          orderLineItems: [{ id: `li-${orderNo}`, status: "UNFULFILLED", quantity: qty, finalPrice: 349.9, price: 399.9, taxValue: 58.32, variant: { name: hit.p.name, sku: hit.v.sku, mainImageId: hit.v.imageId ?? null } }],
+          // Finansal alanlar (ikas belgesi): totalPrice = kalem net toplamı; totalFinalPrice = totalPrice + düzeltmeler + kargo.
+          totalPrice: 349.9 * qty,
+          shippingLines: [{ price: 49.9, finalPrice: 49.9, taxValue: 8.32, isRefunded: false }],
+          taxLines: [{ price: 58.32 * qty + 8.32, rate: 20 }],
         });
+        const o = st.orders[st.orders.length - 1];
+        o.totalFinalPrice = Math.round((o.totalPrice + 49.9 - (orderNo % 2 ? 0 : 52.5)) * 100) / 100; // çift numaralılarda 52,5 TL sipariş indirimi
+        st.transactions ??= {};
       }
       return json({ ok: true, sku: hit.v.sku, stock: hit.v.stockCount });
     }
@@ -189,6 +208,11 @@ http
         }
         console.log("stok yazıldı:", JSON.stringify(variables.input.productStockLocationInputs.map((i) => [i.variantId, i.stockCount])));
         return json({ data: { saveProductStockLocations: true } });
+      }
+      if (op === "listOrder" && mode.finYok && /taxLines/.test(query)) return json({ errors: [{ message: "Cannot query field \"taxLines\" on type \"Order\"." }] }, 400);
+      if (op === "listOrderTransactions") {
+        // İade işlemleri: /_refund ile eklenir. Belgede olduğu gibi varsayılan yalnızca SUCCESS döner.
+        return json({ data: { listOrderTransactions: (st.transactions?.[variables.orderId] ?? []).filter((t) => t.status === "SUCCESS") } });
       }
       if (op === "listOrder") {
         const since = Number(query.match(/gte:\s*(\d+)/)?.[1] ?? 0);

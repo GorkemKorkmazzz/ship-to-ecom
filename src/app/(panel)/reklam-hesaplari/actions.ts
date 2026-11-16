@@ -19,8 +19,9 @@ export async function refreshAccounts(fd: FormData) {
   assertModule(user, "meta");
   let n = 0;
   try {
-    const integ = await db.adIntegration.findFirst({ where: { id: str(fd, "id"), userId: user.id }, select: { id: true, provider: true } });
+    const integ = await db.adIntegration.findFirst({ where: { id: str(fd, "id"), userId: user.id }, select: { id: true, provider: true, externalUserId: true } });
     if (!integ) throw new Error("Bağlantı bulunamadı.");
+    if (integ.externalUserId.startsWith("demo-")) throw new Error("Demo bağlantı: platforma istek gönderilmez, hesaplar demo verisidir.");
     n = integ.provider === "google" ? await syncGoogleAccounts(integ.id, user.id) : integ.provider === "ga4" ? await syncGa4Properties(integ.id, user.id) : await syncMetaAccounts(integ.id, user.id);
   } catch (e) {
     revalidatePath(BASE);
@@ -78,6 +79,8 @@ export async function addProperty(fd: FormData) {
   assertModule(user, "meta");
   let name = "";
   try {
+    const integ = await db.adIntegration.findFirst({ where: { id: str(fd, "integrationId"), userId: user.id }, select: { externalUserId: true } });
+    if (integ?.externalUserId.startsWith("demo-")) throw new Error("Demo bağlantı: Google'a istek gönderilmez.");
     name = (await addGa4Property(str(fd, "integrationId"), user.id, str(fd, "propertyId"))).name;
   } catch (e) {
     go("hata", e instanceof Error ? e.message : "Mülk eklenemedi.");

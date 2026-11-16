@@ -5,7 +5,8 @@ import { syncMetaMetrics } from "./meta";
 
 /** Kullanıcının raporlamaya dahil ettiği tüm reklam hesaplarının verisini çeker. Bir hesabın hatası diğerlerini durdurmaz. */
 export async function syncAllAds(userId: string, force = false) {
-  const accounts = await db.adAccount.findMany({ where: { selected: true, integration: { userId, status: "active" } }, select: { id: true, name: true, provider: true } });
+  // Demo bağlantılar (externalUserId "demo-...") hiçbir platforma istek göndermez.
+  const accounts = await db.adAccount.findMany({ where: { selected: true, integration: { userId, status: "active", NOT: { externalUserId: { startsWith: "demo-" } } } }, select: { id: true, name: true, provider: true } });
   const errors: string[] = [];
   let rows = 0;
   for (const a of accounts) {
@@ -16,7 +17,7 @@ export async function syncAllAds(userId: string, force = false) {
     }
   }
   // GA4: yalnızca bir siteye atanmış mülkler çekilir.
-  const props = await db.analyticsProperty.findMany({ where: { websiteId: { not: null }, integration: { userId, provider: "ga4", status: "active" } }, select: { id: true, name: true } });
+  const props = await db.analyticsProperty.findMany({ where: { websiteId: { not: null }, integration: { userId, provider: "ga4", status: "active", NOT: { externalUserId: { startsWith: "demo-" } } } }, select: { id: true, name: true } });
   for (const p of props) {
     try {
       rows += (await syncGa4Metrics(p.id, userId, force)).rows;

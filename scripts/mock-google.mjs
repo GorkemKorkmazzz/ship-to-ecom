@@ -5,7 +5,7 @@
 // Modlar: curl -X POST "localhost:4040/_mod?iptal=1" (izin reddi) · "?gecersiz=1" (invalid_grant) · Durum: curl localhost:4040/_state
 import http from "node:http";
 
-const mode = { iptal: false, gecersiz: false, adminYok: false, kota: false };
+const mode = { iptal: false, gecersiz: false, adminYok: false, kota: false, huniHata: false, urunHata: false };
 const gaCalls = [];
 const log = [];
 const metricCalls = [];
@@ -72,6 +72,18 @@ http.createServer(async (req, res) => {
         return json({ results: CLIENTS.slice(start, start + size).map((c) => ({ customerClient: c })), ...(start + size < CLIENTS.length ? { nextPageToken: String(start + size) } : {}) });
       }
       if (/FROM customer\b/.test(query)) return json({ results: [{ customer: CUSTOMERS[m[1]] }] });
+      const sp = query.match(/FROM shopping_performance_view WHERE segments\.date BETWEEN '(\d{4}-\d{2}-\d{2})' AND '(\d{4}-\d{2}-\d{2})'/);
+      if (sp) {
+        // Ürün kırılımı (kampanya 501, son 3 gün): SKU, varyant kimliği (aynı ürün), ad-yalnız ve eşleşmeyen anahtar.
+        if (mode.urunHata) return json({ error: { code: 400, message: "Unrecognized field in the query: 'segments.product_item_id'." } }, 400);
+        const out = [];
+        for (let d = 0; d < 3; d++) {
+          const date = new Date(Date.parse(sp[2]) - d * 86400000).toISOString().slice(0, 10);
+          for (const [id, title, cost, imp, clk, conv, val] of [["TS-001", "Basic Tişört", "20000000", "1000", "40", 2, 400], ["v2", "Basic Tişört - L", "10000000", "500", "20", 1, 200], ["SW-001", "Kapüşonlu Sweatshirt", "15000000", "800", "30", 0, 0], ["gmc-1", "Kapüşonlu Sweatshirt", "5000000", "200", "5", 0, 0], ["eski-99", "Silinmiş Ürün", "3000000", "100", "2", 0, 0]])
+            out.push({ campaign: { id: "501" }, segments: { date, productItemId: id, productTitle: title }, metrics: { costMicros: cost, impressions: imp, clicks: clk, conversions: conv, conversionsValue: val } });
+        }
+        return json({ results: out });
+      }
       const rng = query.match(/FROM campaign WHERE segments\.date BETWEEN '(\d{4}-\d{2}-\d{2})' AND '(\d{4}-\d{2}-\d{2})'/);
       if (rng) {
         metricCalls.push({ customer: m[1], login: req.headers["login-customer-id"], since: rng[1], until: rng[2] });
@@ -87,6 +99,39 @@ http.createServer(async (req, res) => {
         }
         const start = Number(page_token ?? 0), size = 3;
         return json({ results: rows.slice(start, start + size), ...(start + size < rows.length ? { nextPageToken: String(start + size) } : {}) });
+      }
+      // Bütçe sorgusu (metriksiz, gerçek API'de bütçe alanları metriklerle seçilemez)
+      if (/campaign_budget\.amount_micros/.test(query) && /FROM campaign$/.test(query.trim())) {
+        if (/metrics\./.test(query)) return json({ error: { code: 400, message: "budget fields cannot be selected with metrics" } }, 400);
+        return json({ results: [
+          { campaign: { id: "501" }, campaignBudget: { amountMicros: "300000000", period: "DAILY" } },
+          { campaign: { id: "502" }, campaignBudget: { totalAmountMicros: "9000000000", period: "CUSTOM_PERIOD" } },
+        ] });
+      }
+      // Reklam asset'leri (ad_group_ad_asset_view): metriksiz yapı + performans etiketi
+      if (/FROM ad_group_ad_asset_view/.test(query)) {
+        if (/metrics\.|segments\.date/.test(query)) return json({ error: { code: 400, message: "test: yapı sorgusu bekleniyor" } }, 400);
+        const a = (ad, fieldType, label, asset) => ({ adGroupAd: { ad: { id: ad } }, adGroupAdAssetView: { fieldType, performanceLabel: label }, asset });
+        return json({ results: [
+          a("70011", "HEADLINE", "BEST", { id: "9001", type: "TEXT", textAsset: { text: "Marka Resmi Mağaza" } }),
+          a("70011", "HEADLINE", "GOOD", { id: "9002", type: "TEXT", textAsset: { text: "Ücretsiz Kargo" } }),
+          a("70011", "DESCRIPTION", "LOW", { id: "9003", type: "TEXT", textAsset: { text: "Yeni sezon ürünleri" } }),
+          a("70021", "HEADLINE", "LEARNING", { id: "9004", type: "TEXT", textAsset: { text: "Kampanyalı Ürünler" } }),
+        ] });
+      }
+      // Reklam grubu ve reklam düzeyi günlük metrikler
+      const lv = query.match(/FROM (ad_group_ad|ad_group) WHERE segments\.date BETWEEN '(\d{4}-\d{2}-\d{2})' AND '(\d{4}-\d{2}-\d{2})'/);
+      if (lv) {
+        const rows = [];
+        for (let d = 0; d < 2; d++) {
+          const date = new Date(Date.parse(lv[3]) - d * 86400000).toISOString().slice(0, 10);
+          for (const [g, gname, cost, clicks, conv, val] of [["7001", "Marka - Tam eşleme", "80000000", "100", 2.5, 1500.5], ["7002", "Marka - Geniş", "45500000", "60", 1, 600.25]]) {
+            const base = { campaign: { id: "501" }, adGroup: { id: g, name: gname, status: "ENABLED" }, segments: { date } };
+            if (lv[1] === "ad_group") rows.push({ ...base, metrics: { costMicros: cost, impressions: "2000", clicks, conversions: conv, conversionsValue: val } });
+            else rows.push({ ...base, adGroupAd: { status: "ENABLED", ad: { id: `${g}1`, name: "", type: "RESPONSIVE_SEARCH_AD" } }, metrics: { costMicros: cost, impressions: "2000", clicks, conversions: conv, conversionsValue: val } });
+          }
+        }
+        return json({ results: rows });
       }
       return json({ error: { code: 400, message: "unknown query" } }, 400);
     }
@@ -109,6 +154,16 @@ http.createServer(async (req, res) => {
       gaCalls.push({ property: rr[1], range: b.dateRanges?.[0], offset: b.offset, dims: (b.dimensions ?? []).map((d) => d.name), metrics: (b.metrics ?? []).map((m) => m.name) });
       if (!b.dimensions) return json({ rows: [{ metricValues: [{ value: "120" }] }], rowCount: 1, metadata: { currencyCode: "TRY", timeZone: "Europe/Istanbul" } });
       const end = Date.parse(b.dateRanges[0].endDate);
+      if (b.dimensions.length === 5) {
+        if (mode.huniHata) return json({ error: { code: 400, message: "Field itemViewEvents is not a valid metric", status: "INVALID_ARGUMENT" } }, 400);
+        const out = [];
+        for (let d = 0; d < 3; d++) {
+          const date = new Date(end - d * 86400000).toISOString().slice(0, 10).replace(/-/g, "");
+          out.push({ dimensionValues: [date, "google", "cpc", "(not set)", "Arama - Marka"].map((value) => ({ value })), metricValues: ["50", "30", "8", "4", "2", "800"].map((value) => ({ value })) });
+          out.push({ dimensionValues: [date, "facebook", "paid", "Kış İndirimi", "(not set)"].map((value) => ({ value })), metricValues: ["40", "25", "6", "3", "1", "600"].map((value) => ({ value })) });
+        }
+        return json({ rows: out, rowCount: out.length, metadata: { currencyCode: "TRY", timeZone: "Europe/Istanbul" } });
+      }
       const rows = [];
       for (let d = 0; d < 3; d++) {
         const date = new Date(end - d * 86400000).toISOString().slice(0, 10).replace(/-/g, "");

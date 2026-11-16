@@ -2,9 +2,10 @@ import { Locked } from "@/app/(panel)/locked";
 import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { buildAdReport, buildCampaignReport, parseAdRange } from "@/lib/ads/report";
+import { adConnections, resolveAdPlatform } from "@/lib/ads/platform";
 import { requireUser } from "@/lib/session";
-import { PageHeader } from "../../ui";
-import { AdFilters, adLink } from "../filters";
+import { AdShell } from "../ad-shell";
+import { AdFilters, AdSourceNote, CoverageNote, adLink } from "../filters";
 
 const PROVIDER: Record<string, [string, string]> = { meta: ["Meta", "bg-blue-100 text-blue-700"], google: ["Google Ads", "bg-amber-100 text-amber-800"] };
 const COLS = [["name", "Kampanya"], ["spend", "Harcama"], ["clicks", "Tıklama"], ["ctr", "CTR"], ["cpc", "CPC"], ["purchases", "Dönüşüm"], ["value", "Dönüşüm değeri"], ["roas", "ROAS"]] as const;
@@ -18,7 +19,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
   const range = parseAdRange(sp.gun, sp.baslangic, sp.bitis);
   const r = await buildAdReport(user.id, range, sp.site);
   const siteId = r.site?.id ?? null;
-  const provider = sp.platform === "meta" || sp.platform === "google" ? sp.platform : null;
+  const [provider, conn] = await Promise.all([resolveAdPlatform(sp.platform), adConnections(user.id)]);
   const c = await buildCampaignReport(user.id, range, siteId, { provider, status: sp.durum, q: sp.q, sort: sp.sirala, dir: sp.yon });
   const extra = { platform: provider, durum: sp.durum || null, q: sp.q || null, sirala: sp.sirala || null, yon: sp.yon || null };
   const link = (patch: Record<string, string | null>) => adLink("/reklam/kampanyalar", range, siteId, patch, extra);
@@ -29,10 +30,11 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
 
   return (
     <>
-      <PageHeader title="Kampanyalar" desc={`${r.site ? r.site.name : "Tüm siteler"} · ${range.from} – ${range.to} · ${c.rows.length} kampanya · değişim: ${c.prevRange.from} – ${c.prevRange.to} ile`}>
-        <Link href={adLink("/reklam", range, siteId)} className="btn-ghost">← Reklam performansı</Link>
-      </PageHeader>
-      <AdFilters base="/reklam/kampanyalar" range={range} sites={r.sites} siteId={siteId} extra={extra} />
+      <AdShell tab="kampanya" title="Kampanya Detayı" desc={`${r.site ? r.site.name : "Tüm mağazalar"} · ${range.label} (${range.from} – ${range.to}) · ${c.rows.length} kampanya · değişim: ${c.prevRange.from} – ${c.prevRange.to} ile`}
+        platform={provider} conn={conn} range={range} siteId={siteId} switchBase="/reklam/kampanyalar" keep={{ durum: sp.durum || null }} />
+      <AdFilters base="/reklam/kampanyalar" range={range} sites={r.sites} siteId={siteId} extra={extra}
+        exportHref={adLink("/api/reklam/disa-aktar", range, siteId, { rapor: "kampanyalar" }, extra)} />
+      {r.accounts.length > 0 && <CoverageNote coverage={r.coverage} />}
 
       <div className="mb-4 flex flex-wrap items-end gap-3">
         <div className="flex gap-1 rounded-lg border border-gray-200 bg-white p-1">
@@ -41,7 +43,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
           <Link href={link({ platform: "google" })} className={pill(provider === "google")}>Google Ads</Link>
         </div>
         <form className="flex flex-wrap items-end gap-2">
-          {Object.entries({ site: siteId, gun: range.preset ? String(range.preset) : null, baslangic: range.preset ? null : range.from, bitis: range.preset ? null : range.to, platform: provider, sirala: sp.sirala || null, yon: sp.yon || null }).map(([k, v]) => v && <input key={k} type="hidden" name={k} value={v} />)}
+          {Object.entries({ site: siteId, gun: range.preset ?? null, baslangic: range.preset ? null : range.from, bitis: range.preset ? null : range.to, platform: provider, sirala: sp.sirala || null, yon: sp.yon || null }).map(([k, v]) => v && <input key={k} type="hidden" name={k} value={v} />)}
           <label className="block">
             <span className="label">Durum</span>
             <select className="input" name="durum" defaultValue={sp.durum ?? ""}>
@@ -102,6 +104,7 @@ export default async function Page({ searchParams }: { searchParams: Promise<SP>
         </table>
       </section>
       <p className="mt-2 text-xs text-gray-500">Değerler Meta ve Google Ads&apos;in raporladığı değerlerdir. Yalnızca seçili dönemde verisi olan kampanyalar listelenir.</p>
+      <AdSourceNote providers={[...new Set(c.rows.map((x) => x.provider))]} demo={r.demo} />
     </>
   );
 }

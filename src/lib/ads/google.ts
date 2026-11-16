@@ -6,6 +6,8 @@
 //  - GERÇEK HESAPTA DOĞRULANACAK: customer ve customer_client GAQL sorgularının alan adları (alan referansı okunamadı).
 import { decrypt, encrypt } from "../crypto";
 import { db } from "../db";
+import { runProductSync, syncGoogleProducts } from "./product-sync";
+import { levelFailure, syncGoogleLevels } from "./levels";
 import { notify } from "../notify";
 
 export const GOOGLE_ADS_VERSION = process.env.GOOGLE_ADS_VERSION ?? "v26";
@@ -154,7 +156,7 @@ async function ads<T>(integ: GoogleInteg, method: "GET" | "POST", path: string, 
 }
 
 /** GAQL sorgusu (sayfalı). */
-async function search<R>(integ: GoogleInteg, customerId: string, query: string, loginCustomerId?: string): Promise<R[]> {
+export async function search<R>(integ: GoogleInteg, customerId: string, query: string, loginCustomerId?: string): Promise<R[]> {
   const out: R[] = [];
   let pageToken: string | undefined;
   for (let i = 0; i < 100; i++) {
@@ -293,7 +295,17 @@ export async function syncGoogleMetrics(adAccountId: string, userId: string, for
     return db.adDailyMetric.upsert({ where: { campaignId_date: { campaignId, date: r.segments!.date! } }, create: { adAccountId: acc.id, campaignId, date: r.segments!.date!, ...data }, update: data });
   });
   for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
-  await db.adAccount.update({ where: { id: acc.id }, data: { metricsSyncedAt: new Date(), metricsError: null } });
+  const sinceDay = ymd(since, acc.timezone);
+  await db.adAccount.update({ where: { id: acc.id }, data: { metricsSyncedAt: new Date(), metricsError: null, ...(!acc.metricsFrom || sinceDay < acc.metricsFrom ? { metricsFrom: sinceDay } : {}) } });
+  // Bütçe, reklam grubu ve reklam düzeyi: ayrı adım; hata verirse kampanya verisi yine kaydedilmiş olur.
+  try {
+    await syncGoogleLevels(acc, { since: sinceDay, until: ymd(until, acc.timezone) });
+    await db.adAccount.update({ where: { id: acc.id }, data: { levelSyncedAt: new Date(), levelError: null } });
+  } catch (e) {
+    await levelFailure(acc, userId, e);
+  }
+  // Ürün düzeyi: ayrı adım, kendi hata kaydıyla.
+  await runProductSync(acc, userId, () => syncGoogleProducts(acc, { since: sinceDay, until: ymd(until, acc.timezone) }));
   return { skipped: false, rows: rows.length };
 }
 

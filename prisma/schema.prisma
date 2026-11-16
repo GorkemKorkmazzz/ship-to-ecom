@@ -1,4 +1,4 @@
-// Not: Yerelde SQLite. Yayına alırken provider "postgresql" yapılıp DATABASE_URL değiştirilir.
+// Not: Yerelde SQLite. Yayında DATABASE_URL postgres:// ise scripts/db.mjs sağlayıcıyı kendisi "postgresql" yapar; bu satırı elle değiştirmeyin.
 generator client {
   provider = "prisma-client-js"
 }
@@ -41,6 +41,11 @@ model User {
   automationRules   AutomationRule[]
   websites          Website[]
   adIntegrations    AdIntegration[]
+  costHistory       ProductCostHistory[]
+  finTransactions   FinancialTransaction[]
+  settlements       MarketplaceSettlement[]
+  returnFinancials  ReturnFinancial[]
+  expenses          Expense[]
   skuSettings    SkuSetting[]
   definitions    Definition[]
   stockMovements StockMovement[]
@@ -80,6 +85,8 @@ model Store {
   variants        StoreVariant[]
   aliases         SkuAlias[]
   orders          Order[]
+  costHistory     ProductCostHistory[]
+  finTransactions FinancialTransaction[]
   website         Website?
   carts           AbandonedCart[]
   sfKey           String?        @unique // vitrin betiğinin herkese açık anahtarı (gizli değildir, yenilenebilir)
@@ -261,6 +268,14 @@ model Order {
   deletedAt       DateTime?
   createdAt       DateTime    @default(now())
   lines           OrderLine[]
+  // Finansal alanlar (ikas belgesiyle doğrulanmış; null = bu sipariş için alınamadı)
+  totalPrice      Float? // ikas totalPrice: kalemlerin net fiyat toplamı
+  shippingTotal   Float? // shippingLines[].finalPrice toplamı (müşteriden alınan kargo ücreti; kargo GİDERİ değildir)
+  shippingTax     Float? // shippingLines[].taxValue toplamı
+  taxTotal        Float? // taxLines[].price toplamı (kalem + kargo + hediye paketi)
+  finSyncedAt     DateTime?
+  transactions    FinancialTransaction[]
+  returns         ReturnFinancial[]
 
   @@unique([storeId, ikasOrderId])
   @@index([storeId, orderedAt])
@@ -277,6 +292,13 @@ model OrderLine {
   imageId    String?
   ikasLineId String?
   status     String?
+  // Maliyet snapshot'ı: sipariş anında geçerli birim maliyet (ProductCostHistory). Bilinmiyorsa null (eksik); sonradan değişmez.
+  listPrice      Float? // ikas price: indirim öncesi birim satış fiyatı
+  taxAmount      Float? // ikas taxValue: kalemin KDV tutarı (fiyatın KDV dahil olup olmadığı belgede belirtilmiyor)
+  unitCost       Float?
+  costCurrency   String?
+  costSource     String? // IKAS_BUY_PRICE | MANUAL | DEMO
+  costCapturedAt DateTime?
 }
 
 // Terk edilmiş sepet — müşteri adı, e-posta, telefon alınmaz.
@@ -412,7 +434,17 @@ model AdAccount {
   remoteStatus  Int? // platformdaki hesap durumu (Meta account_status)
   metricsSyncedAt DateTime? // reklam verisinin son çekildiği an (gereksiz API çağrısını önlemek için)
   metricsError  String?
+  metricsFrom   String? // senkronun kapsadığı en eski gün (YYYY-MM-DD); öncesi "veri yok"
+  levelSyncedAt DateTime? // reklam seti / reklam düzeyi son senkron
+  levelError    String?
+  productSyncedAt DateTime? // ürün düzeyi reklam senkronu (shopping_performance_view / Meta product_id kırılımı)
+  productError    String?
+  productDaily    AdProductDaily[]
   campaigns     AdCampaign[]
+  adSets        AdSet[]
+  ads           Ad[]
+  levelDaily    AdLevelDaily[]
+  reachPeriods  AdReachPeriod[]
   metrics       AdDailyMetric[]
   selected      Boolean            @default(false) // kullanıcı raporlamaya dahil etti mi
   createdAt     DateTime           @default(now())
@@ -441,8 +473,15 @@ model AdCampaign {
   name        String
   status      String? // Meta effective_status
   objective   String?
+  // Bütçe (hesap para biriminde). Meta: kampanya bütçesi (CBO) yoksa bütçe reklam seti düzeyindedir. Google: campaign_budget.
+  dailyBudget    Float?
+  lifetimeBudget Float?
+  budgetLevel    String? // campaign | adset | null (bilinmiyor)
   updatedAt   DateTime        @updatedAt
   metrics     AdDailyMetric[]
+  productDaily AdProductDaily[]
+  adSets      AdSet[]
+  ads         Ad[]
 
   @@unique([adAccountId, externalId])
 }
@@ -463,6 +502,12 @@ model AdDailyMetric {
   clicks        Int        @default(0)
   purchases     Float      @default(0) // platformun raporladığı satın alma
   purchaseValue Float      @default(0) // platformun raporladığı dönüşüm değeri
+  // Meta huni eylemleri (null = çekilmedi / desteklenmiyor; 0 = gerçekten sıfır). Google için doldurulmaz.
+  linkClicks       Int?   // Meta inline_link_clicks
+  landingPageViews Float? // landing_page_view
+  viewContent      Float? // omni_view_content | offsite_conversion.fb_pixel_view_content
+  addToCart        Float? // omni_add_to_cart | offsite_conversion.fb_pixel_add_to_cart
+  initiateCheckout Float? // omni_initiated_checkout | offsite_conversion.fb_pixel_initiate_checkout
   updatedAt     DateTime   @updatedAt
 
   @@unique([campaignId, date])
@@ -485,6 +530,7 @@ model AnalyticsProperty {
   metricsError    String?
   createdAt       DateTime         @default(now())
   daily           AnalyticsDaily[]
+  campaignDaily   AnalyticsCampaignDaily[]
 
   @@unique([integrationId, propertyId])
 }
@@ -574,4 +620,294 @@ model ProductMeta {
 
   @@unique([storeId, productId])
   @@index([storeId, slug])
+}
+
+// Meta reklam seti / Google reklam grubu. Platformun kendi kimliğiyle tekil (hesap içinde).
+model AdSet {
+  id             String     @id @default(cuid())
+  adAccountId    String
+  adAccount      AdAccount  @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  campaignId     String
+  campaign       AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  externalId     String
+  kind           String // adset (Meta) | ad_group (Google)
+  name           String
+  status         String?
+  dailyBudget    Float? // yalnızca Meta reklam seti bütçesi (ABO)
+  lifetimeBudget Float?
+  optimization   String? // Meta optimization_goal
+  updatedAt      DateTime   @updatedAt
+  ads            Ad[]
+  daily          AdLevelDaily[]
+
+  @@unique([adAccountId, externalId])
+  @@index([campaignId])
+}
+
+// Reklam (Meta ad / Google ad_group_ad.ad).
+model Ad {
+  id          String     @id @default(cuid())
+  adAccountId String
+  adAccount   AdAccount  @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  campaignId  String
+  campaign    AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  adSetId     String
+  adSet       AdSet      @relation(fields: [adSetId], references: [id], onDelete: Cascade)
+  externalId  String
+  name        String
+  status      String?
+  adType      String? // Google ad_group_ad.ad.type
+  // Kreatif bilgisi (her senkronda yeniden okunur; görsel adresleri süreli olabilir).
+  creativeId      String? // Meta AdCreative kimliği
+  creativeType    String? // IMAGE | VIDEO | CAROUSEL | DYNAMIC | TEXT | DISPLAY | OTHER
+  objectType      String? // Meta object_type (ham değer)
+  thumbnailUrl    String? // Meta thumbnail_url ya da Google ilk görsel asset adresi
+  imageUrl        String? // Meta image_url
+  videoId         String? // Meta video_id ya da Google YouTube video kimliği
+  assets          String? // Google asset listesi (JSON): [{ fieldType, label, type, url, videoId, text }]
+  creativeSyncedAt DateTime?
+  updatedAt   DateTime   @updatedAt
+  daily       AdLevelDaily[]
+
+  @@unique([adAccountId, externalId])
+  @@index([adSetId])
+  @@index([campaignId])
+}
+
+// Reklam seti ve reklam düzeyi günlük metrikler. Kampanya düzeyi (AdDailyMetric) ile karıştırılmaz.
+// Erişim burada tutulmaz (günler arasında toplanamaz); dönem erişimi AdReachPeriod'dadır.
+model AdLevelDaily {
+  id            String    @id @default(cuid())
+  adAccountId   String
+  adAccount     AdAccount @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  level         String // adset | ad
+  entityId      String // AdSet.id ya da Ad.id
+  adSetId       String?
+  adSet         AdSet?    @relation(fields: [adSetId], references: [id], onDelete: Cascade)
+  adId          String?
+  ad            Ad?       @relation(fields: [adId], references: [id], onDelete: Cascade)
+  date          String // YYYY-MM-DD (hesap saat dilimi)
+  spend         Float     @default(0)
+  impressions   Int       @default(0)
+  clicks        Int       @default(0)
+  purchases     Float     @default(0)
+  purchaseValue Float     @default(0)
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([level, entityId, date])
+  @@index([adAccountId, date])
+}
+
+// Dönem bazlı (tekilleştirilmiş) erişim ve frekans. Yalnızca Meta; tek dönem sorgusuyla alınır, 6 saat önbellek.
+model AdReachPeriod {
+  id          String    @id @default(cuid())
+  adAccountId String
+  adAccount   AdAccount @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  level       String // campaign | adset | ad
+  entityId    String // AdCampaign.id / AdSet.id / Ad.id
+  fromDate    String
+  toDate      String
+  reach       Int?
+  frequency   Float?
+  fetchedAt   DateTime  @default(now())
+
+  @@unique([level, entityId, fromDate, toDate])
+  @@index([adAccountId])
+}
+
+// GA4 kampanya/kaynak kırılımlı e-ticaret hunisi (Data API runReport). Kanal bazlı AnalyticsDaily'den ayrıdır.
+model AnalyticsCampaignDaily {
+  id               String            @id @default(cuid())
+  propertyId       String
+  property         AnalyticsProperty @relation(fields: [propertyId], references: [id], onDelete: Cascade)
+  date             String // YYYY-MM-DD (mülk saat dilimi)
+  source           String // sessionSource
+  medium           String // sessionMedium
+  campaign         String // sessionCampaignName
+  googleAdsCampaign String // sessionGoogleAdsCampaignName ("(not set)" = Google Ads dışı)
+  sessions         Int               @default(0)
+  itemViews        Float             @default(0) // itemViewEvents
+  addToCarts       Float             @default(0)
+  checkouts        Float             @default(0)
+  purchases        Float             @default(0) // ecommercePurchases
+  revenue          Float             @default(0) // purchaseRevenue
+  updatedAt        DateTime          @updatedAt
+
+  @@unique([propertyId, date, source, medium, campaign, googleAdsCampaign])
+  @@index([propertyId, date])
+}
+
+// Ürün düzeyi reklam metrikleri (platformun kendi ürün kırılımı; tahmini dağıtım YOK).
+// Google: FROM shopping_performance_view (segments.product_item_id = Merchant Center teklif kimliği, product_title).
+// Meta: insights breakdowns=product_id. Meta, site dışı (piksel) dönüşümlerde ürün kırılım değerini döndürmez:
+// bu yüzden Meta satırlarında conversions/conversionValue null'dır (desteklenmiyor), 0 değildir.
+model AdProductDaily {
+  id              String     @id @default(cuid())
+  adAccountId     String
+  adAccount       AdAccount  @relation(fields: [adAccountId], references: [id], onDelete: Cascade)
+  campaignId      String
+  campaign        AdCampaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  date            String
+  productKey      String // platformun döndürdüğü ham ürün kimliği
+  productTitle    String?
+  spend           Float?
+  impressions     Int        @default(0)
+  clicks          Int        @default(0)
+  conversions     Float?
+  conversionValue Float?
+  updatedAt       DateTime   @updatedAt
+
+  @@unique([campaignId, date, productKey])
+  @@index([adAccountId, date])
+}
+
+// Ürün maliyet geçmişi (mağaza + SKU). Bir dönemin maliyeti değişince yeni kayıt açılır, eskisi validTo ile kapanır.
+// Geçmişe dönük maliyet yalnızca kullanıcı elle girerse (MANUAL) oluşur; güncel maliyet geçmişe uygulanmaz.
+model ProductCostHistory {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId    String
+  store      Store     @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  sku        String
+  productId  String?
+  unitCost   Float // toplam birim maliyet (alış + üretim + paketleme + etiket + diğer)
+  purchaseCost  Float? // bileşenler (girilmişse; toplamı unitCost'a eşittir)
+  productionCost Float?
+  packagingCost  Float?
+  labelCost      Float?
+  otherCost      Float?
+  currency   String? // bilinmiyorsa null: farklı para birimindeki satışa uygulanmaz
+  validFrom  DateTime
+  validTo    DateTime? // null = hâlâ geçerli
+  source     String // IKAS_BUY_PRICE | MANUAL | DEMO
+  note       String?
+  createdAt  DateTime  @default(now())
+
+  @@index([storeId, sku, validFrom])
+  @@index([userId])
+}
+
+// Ortak finansal kayıt: tüm satış kanallarından gelen gider/gelir hareketleri normalize edilerek burada tutulur.
+// Aynı dış kayıt tekrar aktarılınca (userId, source, externalId) tekilliği sayesinde güncellenir, mükerrer oluşmaz.
+// Tutar her zaman pozitiftir; yön "direction" ile belirtilir (DEBIT = işletmeden çıkan, CREDIT = işletmeye giren).
+model FinancialTransaction {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId      String?
+  store        Store?    @relation(fields: [storeId], references: [id], onDelete: Cascade)
+  orderId      String?
+  order        Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  settlementId String?
+  settlement   MarketplaceSettlement? @relation(fields: [settlementId], references: [id], onDelete: SetNull)
+  source       String // IKAS | TRENDYOL | HEPSIBURADA | AMAZON | N11 | MANUAL | DEMO
+  externalId   String
+  type         String // MARKETPLACE_COMMISSION | PAYMENT_FEE | SHIPPING_COST | SHIPPING_INCOME | PACKAGING | SERVICE_FEE | RETURN_SHIPPING | OTHER
+  direction    String // DEBIT | CREDIT
+  amount       Float // brüt (vergi dahilse vergi dahil) tutar, pozitif
+  currency     String
+  taxAmount    Float? // bilinmiyorsa null
+  taxRate      Float?
+  taxInclusive Boolean? // amount vergi dahil mi; bilinmiyorsa null
+  fxRate       Float? // dönüşüm yapıldıysa kullanılan kur
+  fxCurrency   String?
+  fxDate       DateTime?
+  occurredAt   DateTime
+  status       String    @default("POSTED") // POSTED | PENDING | CANCELLED
+  note         String?
+  // Ürünlere dağıtım yöntemi: REVENUE (satış tutarı, varsayılan) | QUANTITY (adet) | WEIGHT (ağırlık) | MANUAL (CostAllocation satırları)
+  allocationMethod String?
+  allocations  CostAllocation[]
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([userId, source, externalId])
+  @@index([userId, occurredAt])
+  @@index([orderId])
+}
+
+// Pazaryeri hakediş özeti (ödeme dönemi). Ayrıntı kesintiler FinancialTransaction olarak bağlanır.
+model MarketplaceSettlement {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId          String?
+  source           String
+  externalId       String // pazaryeri işlem / hakediş numarası
+  currency         String
+  grossSales       Float?
+  commission       Float?
+  shippingDeduction Float?
+  serviceFee       Float?
+  returnDeduction  Float?
+  otherDeduction   Float?
+  netPayout        Float?
+  payoutDate       DateTime?
+  status           String    @default("POSTED")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  transactions     FinancialTransaction[]
+
+  @@unique([userId, source, externalId])
+}
+
+// İade / geri ödemenin finansal etkisi. Aynı iade iki kez sayılmaz: (userId, source, externalId) tekil.
+// Bir siparişte iade kaydı varsa net satıştan bu kayıtların tutarı düşülür; kalem durumundan türetilen iade o sipariş için kullanılmaz.
+model ReturnFinancial {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId          String?
+  orderId          String?
+  order            Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  source           String
+  externalId       String
+  amount           Float // müşteriye geri ödenen tutar (pozitif)
+  currency         String
+  taxAmount        Float?
+  includesShipping Boolean?
+  reason           String?
+  refundedAt       DateTime
+  status           String    @default("POSTED")
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, source, externalId])
+  @@index([orderId])
+}
+
+// Elle gider dağıtımı: bir sipariş giderinin hangi ürüne (SKU) ne kadar yazılacağı. Toplam, giderin tutarını aşamaz; kalan "dağıtılamayan" görünür.
+model CostAllocation {
+  id            String               @id @default(cuid())
+  transactionId String
+  transaction   FinancialTransaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  sku           String
+  amount        Float
+
+  @@unique([transactionId, sku])
+}
+
+// İşletme gideri (siparişe bağlı olmayan): personel, kira, yazılım, depolama, diğer. Bir dönemi kapsar; rapor dönemine gün bazında paylaştırılır.
+// Reklam platformlarından senkronlanan harcamalar buraya GİRİLMEZ (çift sayım olur); ADVERTISING yalnızca platform dışı reklam giderleri içindir.
+model Expense {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  storeId      String?
+  category     String // PERSONNEL | RENT | SOFTWARE | STORAGE | ADVERTISING | OTHER
+  amount       Float
+  currency     String
+  taxAmount    Float?
+  taxRate      Float?
+  taxInclusive Boolean?
+  periodStart  DateTime
+  periodEnd    DateTime // dahil
+  source       String   @default("MANUAL") // MANUAL | DEMO
+  status       String   @default("POSTED") // POSTED | CANCELLED
+  note         String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId, periodStart])
 }

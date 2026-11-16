@@ -457,7 +457,8 @@ export function sanitize(m: Pick<SfModule, "fields">, raw: Record<string, unknow
     const v = raw[f.key];
     switch (f.type) {
       case "boolean":
-        out[f.key] = v === true || v === "on" || v === "true";
+        // Alan hiç gönderilmediyse (ör. sonradan eklenen alan, eksik liste kaydı) varsayılan geçerlidir; form "" gönderirse kapalıdır.
+        out[f.key] = v === undefined ? f.default === true : v === true || v === "on" || v === "true";
         break;
       case "number": {
         const n = Number(v);

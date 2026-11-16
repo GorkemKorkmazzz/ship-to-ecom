@@ -27,9 +27,14 @@ export function parseCsv(text: string): Record<string, string>[] {
   return rows.slice(1).map((r) => Object.fromEntries(head.map((h, i) => [h, (r[i] ?? "").trim()])));
 }
 
-export function toCsv(head: string[], rows: (string | number | null | undefined)[][]): string {
+/**
+ * opt.safe: formül enjeksiyonu koruması. = + - @ (ve sekme/satır başı) ile başlayan metin hücrelerinin başına ' eklenir;
+ * Excel/Sheets bunları formül olarak çalıştırmaz. Sayılar etkilenmez. Mevcut içe/dışa aktarmalar varsayılan olarak etkilenmez.
+ */
+export function toCsv(head: string[], rows: (string | number | null | undefined)[][], opt: { safe?: boolean } = {}): string {
   const esc = (v: string | number | null | undefined) => {
-    const s = v === null || v === undefined ? "" : typeof v === "number" ? String(v).replace(".", ",") : v;
+    let s = v === null || v === undefined ? "" : typeof v === "number" ? String(v).replace(".", ",") : v;
+    if (opt.safe && typeof v === "string" && /^[=+\-@\t\r]/.test(s)) s = `'${s}`;
     return /[";\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   };
   return "﻿" + [head, ...rows].map((r) => r.map(esc).join(";")).join("\r\n") + "\r\n";

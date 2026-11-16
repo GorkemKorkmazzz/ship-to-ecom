@@ -48,6 +48,8 @@ export async function fetchToken(storeName: string, clientId: string, clientSecr
 }
 
 async function getToken(store: Store): Promise<string> {
+  // Demo mağaza ikas'a hiçbir istek göndermez (src/lib/demo.ts).
+  if (store.clientId === "demo") throw new IkasError("Demo mağaza: ikas'a bağlanılmaz, bu işlem demo hesabında yapılamaz.");
   // Kampanya, ürün ekleme, sipariş durumu gibi ikas'a özel işlemler başka platformun mağazasına gitmesin.
   if (store.platform !== "ikas") throw new IkasError("Bu işlem yalnızca ikas mağazalarında destekleniyor.");
   if (store.accessToken && store.tokenExpiresAt && store.tokenExpiresAt.getTime() - Date.now() > 5 * 60_000) {
@@ -225,6 +227,8 @@ export type RemoteOrder = {
     status?: string | null;
     quantity: number;
     finalPrice: number | null;
+    price?: number | null; // finansal sorguda: indirim öncesi birim satış fiyatı
+    taxValue?: number | null; // finansal sorguda: kalemin vergi tutarı
     variant: { name: string | null; sku: string | null; mainImageId: string | null };
   }[];
   // Rapor alanları (yalnızca zengin sorguda gelir)
@@ -237,6 +241,10 @@ export type RemoteOrder = {
   couponCode?: string | null;
   orderAdjustments?: { name: string; type: string; amount: number; campaignType: string | null }[] | null;
   shippingAddress?: { city: { name: string } | null; district: { name: string | null } | null } | null;
+  // Finansal alanlar (ikas Admin API belgesi: Order.totalPrice, shippingLines, taxLines)
+  totalPrice?: number | null;
+  shippingLines?: { price: number | null; finalPrice: number | null; taxValue: number | null; isRefunded: boolean | null }[] | null;
+  taxLines?: { price: number | null; rate: number | null }[] | null;
 };
 
 const ORDER_CORE = `id orderNumber status orderPaymentStatus orderPackageStatus currencyCode totalFinalPrice orderedAt shippingMethod`;
@@ -250,12 +258,17 @@ const ORDER_RICH = `${ORDER_CORE}
   couponCode
   orderAdjustments { name type amount campaignType }
   shippingAddress { city { name } district { name } }`;
+// Finansal katman: zengin sorgu + belgedeki finansal alanlar. Reddedilirse zengin sorguya düşülür (mevcut senkron etkilenmez).
+const ORDER_FIN = ORDER_RICH.replace("orderLineItems { id status quantity finalPrice", "orderLineItems { id status quantity finalPrice price taxValue") + `
+  totalPrice
+  shippingLines { price finalPrice taxValue isRefunded }
+  taxLines { price rate }`;
 const ORDER_BASIC = `${ORDER_CORE}
   orderPackages { orderPackageNumber ${TRACKING} }
   orderLineItems { quantity finalPrice variant { name sku mainImageId } }`;
 
 /** Siparişleri getirir. Zengin sorgu reddedilirse temel alanlarla tekrar dener (rich=false döner). */
-export async function listOrders(store: Store, updatedSince: Date): Promise<{ orders: RemoteOrder[]; rich: boolean }> {
+export async function listOrders(store: Store, updatedSince: Date): Promise<{ orders: RemoteOrder[]; rich: boolean; fin: boolean }> {
   type Resp = { listOrder: { hasNext: boolean; data: RemoteOrder[] } };
   const since = Math.floor(updatedSince.getTime());
   const run = async (fields: string) => {
@@ -271,12 +284,32 @@ export async function listOrders(store: Store, updatedSince: Date): Promise<{ or
     }
     return out;
   };
+  const soft = (e: unknown) => e instanceof IkasError && !/ulaşılamadı/.test(e.message);
   try {
-    return { orders: await run(ORDER_RICH), rich: true };
+    return { orders: await run(ORDER_FIN), rich: true, fin: true };
   } catch (e) {
-    if (!(e instanceof IkasError) || /ulaşılamadı/.test(e.message)) throw e;
-    return { orders: await run(ORDER_BASIC), rich: false };
+    if (!soft(e)) throw e;
   }
+  try {
+    return { orders: await run(ORDER_RICH), rich: true, fin: false };
+  } catch (e) {
+    if (!soft(e)) throw e;
+    return { orders: await run(ORDER_BASIC), rich: false, fin: false };
+  }
+}
+
+/**
+ * Siparişin başarılı iade (REFUND) ödeme işlemleri. ikas belgesi: listOrderTransactions(orderId) → PublicTransaction
+ * (amount, currencyCode, status, type, processedAt, gatewayReferenceId, refundReason). Varsayılan yalnızca SUCCESS döner.
+ * İşlemin kendi kimlik alanı belgede yok: dış kimlik sipariş + işlem zamanı + tutar + ağ geçidi referansından türetilir.
+ */
+export type RemoteRefund = { externalId: string; amount: number; currency: string; refundedAt: Date; reason: string | null };
+export async function listOrderRefunds(store: Store, orderId: string): Promise<RemoteRefund[]> {
+  type T = { amount: number; currencyCode: string; status: string; type: string; processedAt: number | null; gatewayReferenceId: string | null; refundReason: string | null };
+  const d = await gql<{ listOrderTransactions: T[] }>(store, `query($orderId: String!) { listOrderTransactions(orderId: $orderId) { amount currencyCode status type processedAt gatewayReferenceId refundReason } }`, { orderId });
+  return d.listOrderTransactions
+    .filter((t) => t.type === "REFUND" && t.status === "SUCCESS" && t.processedAt)
+    .map((t) => ({ externalId: `ikas:refund:${orderId}:${t.processedAt}:${t.amount}:${t.gatewayReferenceId ?? "-"}`, amount: t.amount, currency: t.currencyCode, refundedAt: new Date(t.processedAt!), reason: t.refundReason }));
 }
 
 // ───────────── Terk edilmiş sepetler ─────────────
@@ -377,6 +410,7 @@ export const sameName = (a: string, b: string) =>
   a.trim().toLocaleLowerCase("tr") === b.trim().toLocaleLowerCase("tr");
 
 export async function listNamed(store: Store, kind: Kind): Promise<Named[]> {
+  if (store.clientId === "demo") return kind === "category" ? (await import("./demo")).DEMO_CATEGORIES : [];
   const k = KIND[kind];
   const d = await gql<Record<string, Named[]>>(store, `{ ${k.list} { id name } }`);
   return d[k.list];
@@ -474,6 +508,7 @@ export type RemoteCampaign = {
 };
 
 export async function listCampaigns(store: Store): Promise<RemoteCampaign[]> {
+  if (store.clientId === "demo") return (await import("./demo")).DEMO_CAMPAIGNS;
   type Resp = { listCampaign: { hasNext: boolean; data: RemoteCampaign[] } };
   const out: RemoteCampaign[] = [];
   for (let page = 1; page <= 20; page++) {

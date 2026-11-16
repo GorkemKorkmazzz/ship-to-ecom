@@ -2,18 +2,21 @@ import { Locked } from "@/app/(panel)/locked";
 import { hasModule } from "@/lib/access";
 import Link from "next/link";
 import { buildAdReport, parseAdRange, type Ratios } from "@/lib/ads/report";
+import { adConnections, resolveAdPlatform } from "@/lib/ads/platform";
 import { requireUser } from "@/lib/session";
 import { AdFilters, adLink } from "../reklam/filters";
-import { PageHeader, fmtDate } from "../ui";
+import { fmtDate } from "../ui";
+import { AdShell } from "../reklam/ad-shell";
 
 const PROVIDER: Record<string, [string, string]> = { meta: ["Meta", "bg-blue-100 text-blue-700"], google: ["Google Ads", "bg-amber-100 text-amber-800"] };
 
-export default async function Page({ searchParams }: { searchParams: Promise<{ site?: string; gun?: string; baslangic?: string; bitis?: string }> }) {
+export default async function Page({ searchParams }: { searchParams: Promise<{ site?: string; gun?: string; baslangic?: string; bitis?: string; platform?: string }> }) {
   const user = await requireUser();
   if (!hasModule(user, "reklam")) return <Locked moduleId="reklam" />;
   const sp = await searchParams;
   const range = parseAdRange(sp.gun, sp.baslangic, sp.bitis);
-  const r = await buildAdReport(user.id, range, sp.site);
+  const [provider, conn] = await Promise.all([resolveAdPlatform(sp.platform), adConnections(user.id)]);
+  const r = await buildAdReport(user.id, range, sp.site, { provider });
   const fmtN = (v: number, d = 0) => new Intl.NumberFormat("tr-TR", { maximumFractionDigits: d, minimumFractionDigits: d }).format(v);
   const money = (v: number | null) => (v === null ? "—" : new Intl.NumberFormat("tr-TR", { style: "currency", currency: r.currency }).format(v));
   const pct = (v: number | null) => (v === null ? "—" : `%${fmtN(v, 2)}`);
@@ -50,11 +53,12 @@ export default async function Page({ searchParams }: { searchParams: Promise<{ s
 
   return (
     <>
-      <PageHeader title="Reklam raporu" desc={`${r.site ? `${r.site.name} (${r.site.domain})` : "Tüm siteler"} · ${range.from} – ${range.to} · Meta ve Google Ads'in raporladığı değerler`}>
+      <AdShell tab="rapor" title="Reklam Raporları" desc={`${r.site ? `${r.site.name} (${r.site.domain})` : "Tüm siteler"} · ${range.from} – ${range.to} · ${provider === "meta" ? "Meta" : "Google Ads"}'in raporladığı değerler`}
+        platform={provider} conn={conn} range={range} siteId={r.site?.id ?? null} switchBase="/reklam-raporu">
         <Link href="/reklam-hesaplari" className="btn-ghost">Reklam hesapları</Link>
-      </PageHeader>
+      </AdShell>
 
-      <AdFilters base="/reklam-raporu" range={range} sites={r.sites} siteId={r.site?.id ?? null} />
+      <AdFilters base="/reklam-raporu" range={range} sites={r.sites} siteId={r.site?.id ?? null} extra={{ platform: provider }} />
 
       {noAccounts ? (
         <div className="card py-10 text-center text-sm text-gray-600">

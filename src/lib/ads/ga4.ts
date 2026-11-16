@@ -94,6 +94,35 @@ const ymd = (d: Date, tz: string | null) => {
   }
 };
 
+/**
+ * GA4 huni raporu: tarih × sessionSource × sessionMedium × sessionCampaignName × sessionGoogleAdsCampaignName;
+ * sessions, itemViewEvents, addToCarts, checkouts, ecommercePurchases, purchaseRevenue (alanlar Data API şemasında doğrulandı).
+ */
+async function syncGa4Funnel(p: { id: string; propertyId: string; timezone: string | null; integration: Parameters<typeof runReport>[0] }, since: Date, until: Date) {
+  const rows: NonNullable<Report["rows"]> = [];
+  for (let offset = 0, i = 0; i < 25; i++) {
+    const r = await runReport(p.integration, p.propertyId, {
+      dateRanges: [{ startDate: ymd(since, p.timezone), endDate: ymd(until, p.timezone) }],
+      dimensions: [{ name: "date" }, { name: "sessionSource" }, { name: "sessionMedium" }, { name: "sessionCampaignName" }, { name: "sessionGoogleAdsCampaignName" }],
+      metrics: [{ name: "sessions" }, { name: "itemViewEvents" }, { name: "addToCarts" }, { name: "checkouts" }, { name: "ecommercePurchases" }, { name: "purchaseRevenue" }],
+      limit: "10000",
+      offset: String(offset),
+    });
+    rows.push(...(r.rows ?? []));
+    offset += r.rows?.length ?? 0;
+    if (!r.rows?.length || offset >= (r.rowCount ?? 0)) break;
+  }
+  const ops = rows.map((r) => {
+    const [d, source, medium, campaign, gads] = (r.dimensionValues ?? []).map((v) => v.value || "(not set)");
+    const m = (r.metricValues ?? []).map((v) => v.value);
+    const date = /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d;
+    const key = { propertyId: p.id, date, source, medium, campaign, googleAdsCampaign: gads };
+    const data = { sessions: Math.round(num(m[0])), itemViews: num(m[1]), addToCarts: num(m[2]), checkouts: num(m[3]), purchases: num(m[4]), revenue: num(m[5]) };
+    return db.analyticsCampaignDaily.upsert({ where: { propertyId_date_source_medium_campaign_googleAdsCampaign: key }, create: { ...key, ...data }, update: data });
+  });
+  for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
+}
+
 /** Bir mülkün günlük, kanal kırılımlı verisini çeker. Yalnızca bir siteye atanmış mülkler çekilir. */
 export async function syncGa4Metrics(propertyDbId: string, userId: string, force = false) {
   const p = await db.analyticsProperty.findFirst({ where: { id: propertyDbId, integration: { userId, provider: "ga4" } }, include: { integration: true } });
@@ -131,6 +160,12 @@ export async function syncGa4Metrics(propertyDbId: string, userId: string, force
     return db.analyticsDaily.upsert({ where: { propertyId_date_channel: { propertyId: p.id, date, channel: channel || "(not set)" } }, create: { propertyId: p.id, date, channel: channel || "(not set)", ...data }, update: data });
   });
   for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
+  // Kampanya/kaynak kırılımlı e-ticaret hunisi (ayrı rapor). Hata kanal verisini etkilemez; kayda geçer.
+  try {
+    await syncGa4Funnel(p, since, until);
+  } catch (e) {
+    await db.syncLog.create({ data: { userId, level: "warn", message: `${p.name}: GA4 huni verisi alınamadı (kanal verisi etkilenmedi): ${e instanceof Error ? e.message : e}`.slice(0, 900) } });
+  }
   await db.analyticsProperty.update({ where: { id: p.id }, data: { metricsSyncedAt: new Date(), metricsError: null, ...(meta?.currencyCode ? { currency: meta.currencyCode } : {}), ...(meta?.timeZone ? { timezone: meta.timeZone } : {}) } });
   return { skipped: false, rows: rows.length };
 }

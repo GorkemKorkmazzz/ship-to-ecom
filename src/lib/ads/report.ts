@@ -21,31 +21,71 @@ const add = (a: Totals, b: Totals) => {
   a.spend += b.spend; a.impressions += b.impressions; a.clicks += b.clicks; a.purchases += b.purchases; a.value += b.value;
 };
 
-/** YYYY-MM-DD aralığı; geçersizse son 30 gün. En fazla 366 gün. */
-export function parseAdRange(gun?: string | null, from?: string | null, to?: string | null) {
-  const day = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Istanbul" }).format(d);
-  const ok = (s?: string | null) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
-  if (ok(from) && ok(to) && from! <= to!) {
-    const span = (Date.parse(to!) - Date.parse(from!)) / 86400000;
-    if (span <= 366) return { from: from!, to: to!, days: span + 1, preset: null as number | null };
-  }
-  const n = [7, 30, 90].includes(Number(gun)) ? Number(gun) : 30;
-  const now = new Date();
-  return { from: day(new Date(now.getTime() - (n - 1) * 86400000)), to: day(now), days: n, preset: n };
-}
+/** Hazır dönemler (Europe/Istanbul günleri; hafta pazartesi başlar). Önceki dönem: hemen öncesindeki eş uzunlukta aralık. */
+export const AD_PRESETS = [
+  ["bugun", "Bugün"], ["dun", "Dün"], ["7", "Son 7 gün"], ["30", "Son 30 gün"], ["90", "Son 90 gün"],
+  ["bu-hafta", "Bu hafta"], ["gecen-hafta", "Geçen hafta"], ["bu-ay", "Bu ay"], ["gecen-ay", "Geçen ay"],
+] as const;
+export type AdPreset = (typeof AD_PRESETS)[number][0];
+const TZ_DAY = (d: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Istanbul" }).format(d);
+const shift = (ymd: string, days: number) => new Date(Date.parse(`${ymd}T00:00:00Z`) + days * 86400000).toISOString().slice(0, 10);
+const spanDays = (from: string, to: string) => Math.round((Date.parse(to) - Date.parse(from)) / 86400000) + 1;
 
-export async function buildAdReport(userId: string, range: { from: string; to: string }, siteId?: string | null) {
+/** Tarih aralığı: hazır dönem (gun) ya da özel aralık (baslangic/bitis, en fazla 366 gün). Geçersizse son 30 gün. */
+export function parseAdRange(gun?: string | null, from?: string | null, to?: string | null) {
+  const ok = (s?: string | null) => !!s && /^\d{4}-\d{2}-\d{2}$/.test(s) && !Number.isNaN(Date.parse(s));
+  if (ok(from) && ok(to) && from! <= to! && spanDays(from!, to!) <= 366)
+    return { from: from!, to: to!, days: spanDays(from!, to!), preset: null as AdPreset | null, label: `${from} – ${to}` };
+  const today = TZ_DAY(new Date());
+  const dow = (new Date(`${today}T00:00:00Z`).getUTCDay() + 6) % 7; // pazartesi = 0
+  const monthStart = `${today.slice(0, 7)}-01`;
+  const prevMonthEnd = shift(monthStart, -1);
+  const p = (AD_PRESETS.find(([k]) => k === gun)?.[0] ?? "30") as AdPreset;
+  const r: Record<AdPreset, [string, string]> = {
+    bugun: [today, today], dun: [shift(today, -1), shift(today, -1)],
+    "7": [shift(today, -6), today], "30": [shift(today, -29), today], "90": [shift(today, -89), today],
+    "bu-hafta": [shift(today, -dow), today], "gecen-hafta": [shift(today, -dow - 7), shift(today, -dow - 1)],
+    "bu-ay": [monthStart, today], "gecen-ay": [`${prevMonthEnd.slice(0, 7)}-01`, prevMonthEnd],
+  };
+  const [f, t] = r[p];
+  return { from: f, to: t, days: spanDays(f, t), preset: p, label: AD_PRESETS.find(([k]) => k === p)![1] };
+}
+export type AdRange = ReturnType<typeof parseAdRange>;
+export const prevRangeOf = (range: { from: string; days: number }) => {
+  const to = shift(range.from, -1);
+  return { from: shift(to, -(range.days - 1)), to };
+};
+
+/**
+ * Veri kapsamı: aralığın senkronla kapsanıp kapsanmadığı. "Veri yok" ile "0" ayrımı için kullanılır.
+ * - none: bağlı/seçili hesap yok · missing: aralığın hiçbir günü senkronla kapsanmıyor
+ * - partial: aralığın bir kısmı kapsanmıyor (senkron başlangıcından önce ya da son senkrondan sonra) · ok
+ */
+export function coverageOf(accounts: { metricsFrom: string | null; metricsSyncedAt: Date | null }[], range: { from: string; to: string }) {
+  if (!accounts.length) return { state: "none" as const, from: null as string | null, to: null as string | null };
+  const synced = accounts.filter((a) => a.metricsSyncedAt);
+  if (!synced.length) return { state: "missing" as const, from: null, to: null };
+  const from = synced.map((a) => a.metricsFrom).filter((x): x is string => !!x).sort()[0] ?? null;
+  const to = synced.map((a) => TZ_DAY(a.metricsSyncedAt!)).sort().reverse()[0];
+  if ((from && range.to < from) || range.from > to) return { state: "missing" as const, from, to };
+  if ((from && range.from < from) || range.to > to) return { state: "partial" as const, from, to };
+  return { state: "ok" as const, from, to };
+}
+/** Günün senkron kapsamında olup olmadığı (kapsam dışı günler grafikte "veri yok" olarak gösterilir). */
+export const covered = (cov: { from: string | null; to: string | null }, day: string) => (!cov.from || day >= cov.from) && (!cov.to || day <= cov.to);
+
+export async function buildAdReport(userId: string, range: { from: string; to: string }, siteId?: string | null, opt: { provider?: string | null; campaignId?: string | null } = {}) {
   const sites = await db.website.findMany({ where: { userId }, orderBy: { createdAt: "asc" }, select: { id: true, name: true, domain: true, adAccounts: { select: { adAccountId: true } } } });
   const site = siteId ? sites.find((s) => s.id === siteId) ?? null : null;
   const accounts = await db.adAccount.findMany({
-    where: { selected: true, integration: { userId }, ...(site ? { websites: { some: { websiteId: site.id } } } : {}) },
-    select: { id: true, name: true, provider: true, externalId: true, currency: true, metricsSyncedAt: true, metricsError: true, integration: { select: { status: true } } },
+    where: { selected: true, integration: { userId }, ...(site ? { websites: { some: { websiteId: site.id } } } : {}), ...(opt.provider ? { provider: opt.provider } : {}) },
+    select: { id: true, name: true, provider: true, externalId: true, currency: true, metricsSyncedAt: true, metricsError: true, metricsFrom: true, integration: { select: { status: true, externalUserId: true } } },
   });
   const ids = accounts.map((a) => a.id);
   const rows = ids.length
     ? await db.adDailyMetric.groupBy({
         by: ["adAccountId"],
-        where: { adAccountId: { in: ids }, date: { gte: range.from, lte: range.to } },
+        where: { adAccountId: { in: ids }, date: { gte: range.from, lte: range.to }, ...(opt.campaignId ? { campaignId: opt.campaignId } : {}) },
         _sum: { spend: true, impressions: true, clicks: true, purchases: true, purchaseValue: true },
       })
     : [];
@@ -71,7 +111,12 @@ export async function buildAdReport(userId: string, range: { from: string; to: s
   const unassigned = site ? 0 : accounts.filter((a) => !sites.some((s) => s.adAccounts.some((x) => x.adAccountId === a.id))).length;
   const currencies = [...new Set(accounts.map((a) => a.currency).filter(Boolean))] as string[];
 
+  // Kampanya filtresi için seçenekler (kapsamdaki hesapların kampanyaları).
+  const campaignOptions = ids.length ? await db.adCampaign.findMany({ where: { adAccountId: { in: ids } }, orderBy: { name: "asc" }, select: { id: true, name: true, adAccount: { select: { provider: true } } } }) : [];
   return {
+    coverage: coverageOf(accounts, range),
+    demo: accounts.some((a) => a.integration.externalUserId.startsWith("demo-")),
+    campaignOptions: campaignOptions.map((c) => ({ id: c.id, name: c.name, provider: c.adAccount.provider })),
     range, sites: sites.map((s) => ({ id: s.id, name: s.name, domain: s.domain })), site: site ? { id: site.id, name: site.name, domain: site.domain } : null,
     currency: currencies[0] ?? "TRY", mixedCurrency: currencies.length > 1, shared, unassigned,
     total: ratios(total),
@@ -85,9 +130,9 @@ export async function buildAdReport(userId: string, range: { from: string; to: s
 export type AdReport = Awaited<ReturnType<typeof buildAdReport>>;
 
 /** Seçili hesap kimlikleri (rapor ile aynı kapsam: kullanıcı, selected, isteğe bağlı site). */
-async function scopeIds(userId: string, siteId?: string | null) {
+async function scopeIds(userId: string, siteId?: string | null, provider?: string | null) {
   const site = siteId ? await db.website.findFirst({ where: { id: siteId, userId }, select: { id: true } }) : null;
-  const accs = await db.adAccount.findMany({ where: { selected: true, integration: { userId }, ...(site ? { websites: { some: { websiteId: site.id } } } : {}) }, select: { id: true, provider: true } });
+  const accs = await db.adAccount.findMany({ where: { selected: true, integration: { userId }, ...(site ? { websites: { some: { websiteId: site.id } } } : {}), ...(provider ? { provider } : {}) }, select: { id: true, provider: true, metricsFrom: true, metricsSyncedAt: true } });
   return accs;
 }
 
@@ -101,8 +146,9 @@ const dayList = (from: string, to: string) => {
  * Dashboard verisi: günlük platform serileri (veri gelmeyen günler 0), önceki eş uzunluktaki dönemin toplamları
  * ve kampanya performans tablosu.
  */
-export async function buildAdDashboard(userId: string, range: { from: string; to: string; days: number }, siteId?: string | null) {
-  const accs = await scopeIds(userId, siteId);
+export async function buildAdDashboard(userId: string, range: { from: string; to: string; days: number }, siteId?: string | null, opt: { provider?: string | null; campaignId?: string | null } = {}) {
+  const accs = await scopeIds(userId, siteId, opt.provider);
+  const cf = opt.campaignId ? { campaignId: opt.campaignId } : {};
   const ids = accs.map((a) => a.id);
   const providerOf = new Map(accs.map((a) => [a.id, a.provider]));
   const days = dayList(range.from, range.to);
@@ -111,9 +157,9 @@ export async function buildAdDashboard(userId: string, range: { from: string; to
 
   const [daily, prev, camps] = ids.length
     ? await Promise.all([
-        db.adDailyMetric.groupBy({ by: ["adAccountId", "date"], where: { adAccountId: { in: ids }, date: { gte: range.from, lte: range.to } }, _sum: { spend: true, impressions: true, clicks: true, purchases: true, purchaseValue: true } }),
-        db.adDailyMetric.aggregate({ where: { adAccountId: { in: ids }, date: { gte: prevFrom, lte: prevTo } }, _sum: { spend: true, impressions: true, clicks: true, purchases: true, purchaseValue: true }, _count: true }),
-        campaignSums(ids, range),
+        db.adDailyMetric.groupBy({ by: ["adAccountId", "date"], where: { adAccountId: { in: ids }, date: { gte: range.from, lte: range.to }, ...cf }, _sum: { spend: true, impressions: true, clicks: true, purchases: true, purchaseValue: true } }),
+        db.adDailyMetric.aggregate({ where: { adAccountId: { in: ids }, date: { gte: prevFrom, lte: prevTo }, ...cf }, _sum: { spend: true, impressions: true, clicks: true, purchases: true, purchaseValue: true }, _count: true }),
+        campaignSums(ids, range, opt.campaignId ? [opt.campaignId] : undefined),
       ])
     : [[], null, []];
 
@@ -134,10 +180,13 @@ export async function buildAdDashboard(userId: string, range: { from: string; to
 
   const campaigns = await campaignRows(camps);
 
-  const previous = prev && prev._count
+  // Önceki dönem senkronla kapsanmıyorsa karşılaştırma gösterilmez (0 ile kıyaslanmaz).
+  const prevCov = coverageOf(accs, { from: prevFrom, to: prevTo });
+  const previous = prev && prev._count && prevCov.state !== "missing"
     ? ratios({ spend: prev._sum.spend ?? 0, impressions: prev._sum.impressions ?? 0, clicks: prev._sum.clicks ?? 0, purchases: prev._sum.purchases ?? 0, value: prev._sum.purchaseValue ?? 0 })
     : null;
-  return { days, series, previous, prevRange: { from: prevFrom, to: prevTo }, campaigns };
+  const cov = coverageOf(accs, range);
+  return { days, series, previous, prevRange: { from: prevFrom, to: prevTo }, prevCoverage: prevCov.state, campaigns, coverage: cov, coveredDays: days.map((d) => covered(cov, d)) };
 }
 
 const campaignSums = (accountIds: string[], range: { from: string; to: string }, campaignIds?: string[]) =>

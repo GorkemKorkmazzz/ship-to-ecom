@@ -20,4 +20,6 @@ export function applyRule(price: number, rule: PriceRule): number {
 
 /** ikas görsel adresi (CDN). */
 export const imageUrl = (merchantId: string | null | undefined, imageId: string | null | undefined, size = 180) =>
-  merchantId && imageId ? `https://cdn.myikas.com/images/${merchantId}/${imageId}/image_${size}.webp` : null;
+  // Demo verisi görseli doğrudan adres olarak tutar (data:image/svg+xml); ikas görselleri kimlikle gelir.
+  imageId?.startsWith("data:image/") ? imageId
+  : merchantId && imageId ? `https://cdn.myikas.com/images/${merchantId}/${imageId}/image_${size}.webp` : null;

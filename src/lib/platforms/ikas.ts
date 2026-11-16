@@ -1,4 +1,4 @@
-import { getMerchantId, listAbandonedCheckouts, listOrders, listStockLocations, listVariants, setPrices, setStocks } from "../ikas";
+import { getMerchantId, listAbandonedCheckouts, listOrderRefunds, listOrders, listStockLocations, listVariants, setPrices, setStocks } from "../ikas";
 import type { PlatformAdapter } from "./types";
 
 const hostOf = (url: string | null | undefined) => {
@@ -20,11 +20,13 @@ export const ikasAdapter: PlatformAdapter = {
   listVariants,
   setStocks,
   setPrices,
+  listRefunds: async (store, orderId) => listOrderRefunds(store, orderId),
 
   async listOrders(store, since) {
-    const { orders, rich } = await listOrders(store, since);
+    const { orders, rich, fin } = await listOrders(store, since);
+    const sum = (xs: (number | null | undefined)[] | undefined) => (xs && xs.length ? xs.reduce<number>((a, x) => a + (x ?? 0), 0) : 0);
     return {
-      rich,
+      rich, fin,
       orders: orders.map((o) => ({
         externalId: o.id,
         data: {
@@ -64,8 +66,18 @@ export const ikasAdapter: PlatformAdapter = {
                 ),
               }
             : {}),
+          ...(fin
+            ? {
+                totalPrice: o.totalPrice ?? null,
+                shippingTotal: sum(o.shippingLines?.map((x) => x.finalPrice)),
+                shippingTax: sum(o.shippingLines?.map((x) => x.taxValue)),
+                taxTotal: sum(o.taxLines?.map((x) => x.price)),
+                finSyncedAt: new Date(),
+              }
+            : {}),
         },
         lines: o.orderLineItems.map((l) => ({
+          ...(fin ? { listPrice: l.price ?? null, taxAmount: l.taxValue ?? null } : {}),
           sku: l.variant?.sku ?? "",
           name: l.variant?.name ?? "",
           quantity: l.quantity,

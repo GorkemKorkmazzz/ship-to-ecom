@@ -8,6 +8,8 @@ import type { PriceWrite, RemoteVariant } from "./platforms/types";
 import { applyRule } from "./pricing";
 import { notify, type NewNotification } from "./notify";
 import { allocate, reconcile } from "./reconcile";
+import { loadCosts, snapshotFor, trackBuyPrices } from "./finance/costs";
+import { ingestReturns } from "./finance/ingest";
 
 // Aynı kullanıcı için eşzamanlı iki senkron çalışmaz. Çalışırken gelen istek,
 // bittikten sonra bir tur daha çalıştırır. (Tek sunucu örneği varsayar; birden fazla
@@ -41,7 +43,9 @@ type Log = { level: string; message: string; sku?: string; storeLabel?: string }
 
 async function runSync(userId: string) {
   const owner = await db.user.findUniqueOrThrow({ where: { id: userId } });
-  const stores = await db.store.findMany({ where: { userId }, orderBy: { createdAt: "asc" } });
+  // Demo mağazalar senkrona girmez (ikas'a istek yok; veriler yerel demo verisidir).
+  const stores = (await db.store.findMany({ where: { userId }, orderBy: { createdAt: "asc" } })).filter((s) => s.clientId !== "demo");
+  if (!stores.length) return;
   const logs: Log[] = [];
   const loaded: { store: Store; locationId: string; rows: Map<string, StoreVariant> }[] = [];
 
@@ -145,6 +149,12 @@ async function saveVariants(store: Store, remote: RemoteVariant[], logs: Log[]) 
   const gone = [...existing.values()].filter((r) => !seen.has(r.variantId)).map((r) => r.id);
   if (gone.length) ops.push(db.storeVariant.deleteMany({ where: { id: { in: gone } } }));
   for (let i = 0; i < ops.length; i += 200) await db.$transaction(ops.slice(i, i + 200));
+  // Maliyet geçmişi: alış fiyatı değişen SKU'lar için yeni dönem açılır. Hata stok senkronunu durdurmaz.
+  try {
+    await trackBuyPrices(store.userId, store.id, remote.map((v) => ({ sku: v.sku, productId: v.productId, buyPrice: v.buyPrice, duplicateSku: (skuCount.get(keyOf(v.sku)) ?? 0) > 1 })));
+  } catch (e) {
+    logs.push({ level: "warn", storeLabel: store.label, message: `Maliyet geçmişi güncellenemedi: ${e instanceof Error ? e.message : e}`.slice(0, 300) });
+  }
 
   for (const [sku, n] of skuCount) {
     if (n > 1) logs.push({ level: "warn", sku, storeLabel: store.label, message: `Aynı SKU ${n} varyantta kullanılıyor; bu SKU senkron dışı bırakıldı.` });
@@ -307,14 +317,45 @@ async function syncOrders(store: Store, logs: Log[]) {
   const { orders, rich } = await adapterFor(store).listOrders(store, since);
   if (!rich && orders.length) logs.push({ level: "warn", storeLabel: store.label, message: "Sipariş kaynak/kampanya alanları okunamadı; raporlar bu siparişler için eksik kalır." });
   const ids: string[] = [];
+  const refunded: { id: string; externalId: string }[] = [];
+  // Maliyet snapshot'ı: kalemler her güncellemede yeniden yazıldığı için önceki snapshot korunur (kalem kimliğiyle, yoksa SKU ile);
+  // snapshot yoksa sipariş anındaki geçerli maliyet yazılır, o da yoksa boş (eksik) kalır. Toplu okunur (sipariş başına sorgu yok).
+  const [costs, prevLines] = await Promise.all([
+    loadCosts(store.userId, [store.id]),
+    orders.length ? db.orderLine.findMany({ where: { order: { storeId: store.id, ikasOrderId: { in: orders.map((o) => o.externalId) } }, OR: [{ unitCost: { not: null } }, { listPrice: { not: null } }, { taxAmount: { not: null } }] }, select: { ikasLineId: true, sku: true, unitCost: true, costCurrency: true, costSource: true, costCapturedAt: true, listPrice: true, taxAmount: true, order: { select: { ikasOrderId: true } } } }) : [],
+  ]);
+  const prevOf = new Map<string, (typeof prevLines)[number]>();
+  for (const l of prevLines) {
+    if (l.ikasLineId) prevOf.set(`${l.order.ikasOrderId}|id|${l.ikasLineId}`, l);
+    prevOf.set(`${l.order.ikasOrderId}|sku|${l.sku}`, l);
+  }
   for (const o of orders) {
+    const lines = o.lines.map((l) => {
+      const p = (l.ikasLineId && prevOf.get(`${o.externalId}|id|${l.ikasLineId}`)) || prevOf.get(`${o.externalId}|sku|${l.sku}`);
+      const snap = p?.unitCost != null ? { unitCost: p.unitCost, costCurrency: p.costCurrency, costSource: p.costSource, costCapturedAt: p.costCapturedAt } : snapshotFor(costs, store.id, l.sku, o.data.orderedAt ?? null, o.data.currency);
+      // Finansal sorgu bu sefer alınamadıysa (geri düşüş) önceki senkrondaki kalem fiyatı ve vergisi korunur; kalemler yeniden yazıldığı için aksi halde silinirdi.
+      const fin = l.listPrice === undefined && p ? { listPrice: p.listPrice, taxAmount: p.taxAmount } : {};
+      return { ...l, ...snap, ...fin };
+    });
     const saved = await db.order.upsert({
       where: { storeId_ikasOrderId: { storeId: store.id, ikasOrderId: o.externalId } },
-      create: { ...o.data, storeId: store.id, ikasOrderId: o.externalId, lines: { create: o.lines } },
-      update: { ...o.data, lines: { deleteMany: {}, create: o.lines } },
+      create: { ...o.data, storeId: store.id, ikasOrderId: o.externalId, lines: { create: lines } },
+      update: { ...o.data, lines: { deleteMany: {}, create: lines } },
       select: { id: true },
     });
     ids.push(saved.id);
+    if (/REFUND/.test(o.data.status) || /REFUND/.test(o.data.paymentStatus ?? "")) refunded.push({ id: saved.id, externalId: o.externalId });
+  }
+  // İade ödemeleri: yalnızca iade durumundaki siparişler için sorgulanır. Aynı iade tekrar gelirse kayıt güncellenir, çoğalmaz.
+  const adapter = adapterFor(store);
+  if (adapter.listRefunds && refunded.length) {
+    try {
+      const list = [];
+      for (const r of refunded.slice(0, 100)) for (const x of await adapter.listRefunds(store, r.externalId)) list.push({ ...x, source: "IKAS" as const, storeId: store.id, orderId: r.id });
+      if (list.length) await ingestReturns(store.userId, list);
+    } catch (e) {
+      logs.push({ level: "warn", storeLabel: store.label, message: `İade ödemeleri okunamadı (sipariş verisi etkilenmedi): ${e instanceof Error ? e.message : e}`.slice(0, 300) });
+    }
   }
   await db.store.update({ where: { id: store.id }, data: { lastOrderSyncAt: startedAt } });
   return ids;
